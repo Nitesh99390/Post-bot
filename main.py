@@ -5,6 +5,7 @@ import threading
 import requests
 import time
 import os
+import json
 from supabase import create_client, Client
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "PUT_YOUR_TOKEN_HERE")
@@ -25,7 +26,7 @@ app = Flask(__name__)
 
 user_posts = {}
 
-# HTML Template fully translated to English
+# HTML Template updated to handle multiple buttons
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -76,15 +77,36 @@ HTML_TEMPLATE = """
             let postsHtml = "";
             if (data.posts && data.posts.length > 0) {
                 data.posts.forEach(p => {
-                    let linkHtml = p.show_link 
-                        ? `<div class="link-box">🔗 <b>Link:</b> <a href="${p.btn_url}" target="_blank">${p.btn_url}</a></div>` 
-                        : `<div class="hidden-link">🔒 <b>Link hidden</b> (Visible only to creator & Admin)</div>`;
+                    let btnNamesStr = p.btn_name;
+                    let btnUrlsStr = p.btn_url;
+                    let linksHtml = "";
+                    let displayedNames = btnNamesStr;
+                    
+                    try {
+                        let names = JSON.parse(btnNamesStr);
+                        let urls = JSON.parse(btnUrlsStr);
+                        displayedNames = names.join(' | ');
+                        
+                        if (p.show_link) {
+                            urls.forEach((u, i) => {
+                                linksHtml += `<div class="link-box">🔗 <b>Button ${i+1}:</b> <a href="${u}" target="_blank">${u}</a></div>`;
+                            });
+                        } else {
+                            linksHtml = `<div class="hidden-link">🔒 <b>${names.length} Link(s) hidden</b> (Visible only to creator & Admin)</div>`;
+                        }
+                    } catch(e) {
+                        if (p.show_link) {
+                            linksHtml = `<div class="link-box">🔗 <b>Link:</b> <a href="${btnUrlsStr}" target="_blank">${btnUrlsStr}</a></div>`;
+                        } else {
+                            linksHtml = `<div class="hidden-link">🔒 <b>Link hidden</b> (Visible only to creator & Admin)</div>`;
+                        }
+                    }
                     
                     postsHtml += `<div class="card">
                         <div class="post-text"><b>Message:</b> ${p.message_text}</div>
-                        <div><b>Button:</b> ${p.btn_name}</div>
+                        <div><b>Buttons:</b> ${displayedNames}</div>
                         <div style="margin-top:8px; font-size:0.8em; color:gray;">👤 Creator ID: ${p.user_id}</div>
-                        ${linkHtml}
+                        ${linksHtml}
                     </div>`;
                 });
             } else {
@@ -155,6 +177,12 @@ def get_cancel_menu():
     markup.add(KeyboardButton("❌ Cancel"))
     return markup
 
+def get_add_more_menu():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    markup.add(KeyboardButton("✅ Done Adding Buttons"))
+    markup.add(KeyboardButton("❌ Cancel"))
+    return markup
+
 def get_publish_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
     markup.add(KeyboardButton(f"📢 Send to {DEFAULT_CHANNEL}"))
@@ -179,7 +207,7 @@ def cancel_action(message):
 
 @bot.message_handler(func=lambda message: message.text == "📝 Create Post")
 def start_create_post(message):
-    user_posts[message.chat.id] = {}
+    user_posts[message.chat.id] = {'buttons': []}
     msg = bot.send_message(message.chat.id, "Please send the message text for your post\n(You can use HTML tags like <b>bold</b> or <i>italic</i>):", reply_markup=get_cancel_menu(), parse_mode="HTML")
     bot.register_next_step_handler(msg, process_post_text)
 
@@ -188,18 +216,77 @@ def process_post_text(message):
         return cancel_action(message)
     
     user_posts[message.chat.id]['text'] = message.text
-    msg = bot.send_message(message.chat.id, "Great! Now send the text you want to show on the button:")
+    msg = bot.send_message(message.chat.id, "Great! Send the text for **Button 1**:", reply_markup=get_cancel_menu(), parse_mode="Markdown")
     bot.register_next_step_handler(msg, process_button_name)
 
 def process_button_name(message):
     if message.text == "❌ Cancel":
         return cancel_action(message)
     
-    user_posts[message.chat.id]['btn_name'] = message.text
-    msg = bot.send_message(message.chat.id, "Awesome! Now send the URL (Link) or @username for this button:")
+    if message.text == "✅ Done Adding Buttons":
+        if len(user_posts[message.chat.id]['buttons']) > 0:
+            finish_post_creation(message)
+        else:
+            msg = bot.send_message(message.chat.id, "You need to add at least 1 button. Send the text for Button 1:", reply_markup=get_cancel_menu())
+            bot.register_next_step_handler(msg, process_button_name)
+        return
+        
+    user_posts[message.chat.id]['current_btn_name'] = message.text
+    msg = bot.send_message(message.chat.id, "Awesome! Now send the URL (Link) or @username for this button:", reply_markup=get_cancel_menu())
     bot.register_next_step_handler(msg, process_button_url)
 
-def save_to_supabase(user_id, username, text, btn_name, btn_url):
+def process_button_url(message):
+    if message.text == "❌ Cancel":
+        return cancel_action(message)
+    
+    url = message.text.strip()
+    
+    if url.startswith("@"):
+        url = f"https://t.me/{url[1:]}"
+    elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+        url = "https://" + url
+
+    btn_name = user_posts[message.chat.id]['current_btn_name']
+    user_posts[message.chat.id]['buttons'].append({'name': btn_name, 'url': url})
+    
+    btn_count = len(user_posts[message.chat.id]['buttons'])
+    
+    if btn_count >= 10:
+        bot.send_message(message.chat.id, "Maximum limit of 10 buttons reached!")
+        finish_post_creation(message)
+    else:
+        msg = bot.send_message(message.chat.id, f"Button {btn_count} added successfully! ✅\n\nSend the text for **Button {btn_count + 1}**, or click **'Done Adding Buttons'** to proceed.", reply_markup=get_add_more_menu(), parse_mode="Markdown")
+        bot.register_next_step_handler(msg, process_button_name)
+
+def finish_post_creation(message):
+    chat_id = message.chat.id
+    buttons = user_posts[chat_id]['buttons']
+    text = user_posts[chat_id]['text']
+    
+    # Process inline buttons
+    inline_markup = InlineKeyboardMarkup()
+    for btn in buttons:
+        inline_markup.add(InlineKeyboardButton(btn['name'], url=btn['url']))
+        
+    # Serialize for database
+    names_json = json.dumps([b['name'] for b in buttons])
+    urls_json = json.dumps([b['url'] for b in buttons])
+    
+    # Save to database immediately
+    username = message.from_user.username or message.from_user.first_name
+    user_id = message.from_user.id
+    save_to_supabase(user_id, username, text, names_json, urls_json)
+    
+    bot.send_message(chat_id, "Here is a preview of your post:")
+    try:
+        bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=inline_markup)
+        msg = bot.send_message(chat_id, "Post created and saved! Where do you want to publish it?", reply_markup=get_publish_menu())
+        bot.register_next_step_handler(msg, process_publish_decision)
+    except Exception as e:
+        bot.send_message(chat_id, "Error! Please make sure your HTML tags are correct.", reply_markup=get_main_menu())
+        del user_posts[chat_id]
+
+def save_to_supabase(user_id, username, text, btn_name_json, btn_url_json):
     if not supabase:
         return
     try:
@@ -213,45 +300,11 @@ def save_to_supabase(user_id, username, text, btn_name, btn_url):
         supabase.table('posts').insert({
             'user_id': user_id,
             'message_text': text,
-            'btn_name': btn_name,
-            'btn_url': btn_url
+            'btn_name': btn_name_json,
+            'btn_url': btn_url_json
         }).execute()
     except Exception as e:
         pass
-
-def process_button_url(message):
-    if message.text == "❌ Cancel":
-        return cancel_action(message)
-    
-    url = message.text.strip()
-    
-    if url.startswith("@"):
-        url = f"https://t.me/{url[1:]}"
-    elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
-        url = "https://" + url
-
-    user_posts[message.chat.id]['btn_url'] = url
-    
-    text = user_posts[message.chat.id]['text']
-    btn_name = user_posts[message.chat.id]['btn_name']
-    btn_url = user_posts[message.chat.id]['btn_url']
-    
-    # Save to database immediately as requested
-    username = message.from_user.username or message.from_user.first_name
-    user_id = message.from_user.id
-    save_to_supabase(user_id, username, text, btn_name, btn_url)
-    
-    inline_markup = InlineKeyboardMarkup()
-    inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
-    
-    bot.send_message(message.chat.id, "Here is a preview of your post:")
-    try:
-        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=inline_markup)
-        msg = bot.send_message(message.chat.id, "Post created and saved! Where do you want to publish it?", reply_markup=get_publish_menu())
-        bot.register_next_step_handler(msg, process_publish_decision)
-    except Exception as e:
-        bot.send_message(message.chat.id, "Error! Please make sure your HTML tags are correct.", reply_markup=get_main_menu())
-        del user_posts[message.chat.id]
 
 def process_publish_decision(message):
     if message.text == "❌ Cancel":
@@ -263,11 +316,11 @@ def process_publish_decision(message):
         return
 
     text = user_posts[chat_id]['text']
-    btn_name = user_posts[chat_id]['btn_name']
-    btn_url = user_posts[chat_id]['btn_url']
+    buttons = user_posts[chat_id]['buttons']
     
     inline_markup = InlineKeyboardMarkup()
-    inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
+    for btn in buttons:
+        inline_markup.add(InlineKeyboardButton(btn['name'], url=btn['url']))
 
     if message.text == f"📢 Send to {DEFAULT_CHANNEL}":
         try:
@@ -295,11 +348,11 @@ def process_custom_publish(message):
         return
         
     text = user_posts[chat_id]['text']
-    btn_name = user_posts[chat_id]['btn_name']
-    btn_url = user_posts[chat_id]['btn_url']
+    buttons = user_posts[chat_id]['buttons']
     
     inline_markup = InlineKeyboardMarkup()
-    inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
+    for btn in buttons:
+        inline_markup.add(InlineKeyboardButton(btn['name'], url=btn['url']))
 
     try:
         bot.send_message(target_chat, text, parse_mode="HTML", reply_markup=inline_markup)
