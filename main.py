@@ -48,7 +48,7 @@ def get_publish_menu():
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    text = "Welcome! Use the keyboard below to navigate."
+    text = "Welcome to the Professional Post Bot!\nUse the keyboard below to navigate."
     bot.send_message(message.chat.id, text, reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "❌ Cancel")
@@ -59,14 +59,30 @@ def cancel_action(message):
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Help")
 def help_action(message):
-    help_text = "I can help you create posts with inline buttons.\n\nClick on '📝 Create Post' to start. You can send it directly to your channel from here."
-    bot.send_message(message.chat.id, help_text, reply_markup=get_main_menu())
+    help_text = "I can help you create professional posts.\n\n- Send a Photo with a caption and inline button.\n- Use HTML tags like <b>bold</b> or <i>italic</i> to format your text.\n\nClick on '📝 Create Post' to start."
+    bot.send_message(message.chat.id, help_text, parse_mode="HTML", reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "📝 Create Post")
 def start_create_post(message):
-    user_posts[message.chat.id] = {}
-    msg = bot.send_message(message.chat.id, "Please send the message text for your post:", reply_markup=get_cancel_menu())
-    bot.register_next_step_handler(msg, process_post_text)
+    user_posts[message.chat.id] = {'photo': None, 'text': None, 'btn_name': None, 'btn_url': None}
+    msg = bot.send_message(message.chat.id, "Please send a Photo for your post, or just send the Message text if you don't want a photo:", reply_markup=get_cancel_menu())
+    bot.register_next_step_handler(msg, process_post_content)
+
+def process_post_content(message):
+    if message.text == "❌ Cancel":
+        return cancel_action(message)
+    
+    if message.content_type == 'photo':
+        user_posts[message.chat.id]['photo'] = message.photo[-1].file_id
+        msg = bot.send_message(message.chat.id, "Photo received! Now send the text/caption for this post:")
+        bot.register_next_step_handler(msg, process_post_text)
+    elif message.content_type == 'text':
+        user_posts[message.chat.id]['text'] = message.text
+        msg = bot.send_message(message.chat.id, "Great! Now send the text you want to show on the button:")
+        bot.register_next_step_handler(msg, process_button_name)
+    else:
+        msg = bot.send_message(message.chat.id, "Invalid input. Please send a Photo or Text.")
+        bot.register_next_step_handler(msg, process_post_content)
 
 def process_post_text(message):
     if message.text == "❌ Cancel":
@@ -89,8 +105,6 @@ def process_button_url(message):
         return cancel_action(message)
     
     url = message.text.strip()
-    
-    # Auto-format logic jisse koi bhi link ya username kaam karega
     if url.startswith("@"):
         url = f"https://t.me/{url[1:]}"
     elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
@@ -98,6 +112,7 @@ def process_button_url(message):
 
     user_posts[message.chat.id]['btn_url'] = url
     
+    photo = user_posts[message.chat.id]['photo']
     text = user_posts[message.chat.id]['text']
     btn_name = user_posts[message.chat.id]['btn_name']
     btn_url = user_posts[message.chat.id]['btn_url']
@@ -106,10 +121,18 @@ def process_button_url(message):
     inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
     
     bot.send_message(message.chat.id, "Here is a preview of your post:")
-    bot.send_message(message.chat.id, text, reply_markup=inline_markup)
     
-    msg = bot.send_message(message.chat.id, "Are you satisfied with this preview? Where do you want to publish it?", reply_markup=get_publish_menu())
-    bot.register_next_step_handler(msg, process_publish_decision)
+    try:
+        if photo:
+            bot.send_photo(message.chat.id, photo, caption=text, parse_mode="HTML", reply_markup=inline_markup)
+        else:
+            bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=inline_markup)
+            
+        msg = bot.send_message(message.chat.id, "Are you satisfied with this preview? Where do you want to publish it?", reply_markup=get_publish_menu())
+        bot.register_next_step_handler(msg, process_publish_decision)
+    except Exception as e:
+        msg = bot.send_message(message.chat.id, "Formatting error! Make sure your HTML tags (like <b></b>) are correct. Let's try creating the post again.", reply_markup=get_main_menu())
+        del user_posts[message.chat.id]
 
 def process_publish_decision(message):
     if message.text == "❌ Cancel":
@@ -120,6 +143,7 @@ def process_publish_decision(message):
         bot.send_message(chat_id, "Session expired. Please start again.", reply_markup=get_main_menu())
         return
 
+    photo = user_posts[chat_id]['photo']
     text = user_posts[chat_id]['text']
     btn_name = user_posts[chat_id]['btn_name']
     btn_url = user_posts[chat_id]['btn_url']
@@ -129,11 +153,15 @@ def process_publish_decision(message):
 
     if message.text == f"📢 Send to {DEFAULT_CHANNEL}":
         try:
-            bot.send_message(DEFAULT_CHANNEL, text, reply_markup=inline_markup)
+            if photo:
+                bot.send_photo(DEFAULT_CHANNEL, photo, caption=text, parse_mode="HTML", reply_markup=inline_markup)
+            else:
+                bot.send_message(DEFAULT_CHANNEL, text, parse_mode="HTML", reply_markup=inline_markup)
+            
             bot.send_message(chat_id, f"Successfully published to {DEFAULT_CHANNEL}!", reply_markup=get_main_menu())
             del user_posts[chat_id]
         except Exception as e:
-            bot.send_message(chat_id, f"Error: Make sure I am an admin in {DEFAULT_CHANNEL}.", reply_markup=get_main_menu())
+            bot.send_message(chat_id, f"Error: Make sure I am an admin in {DEFAULT_CHANNEL} and can send messages/photos.", reply_markup=get_main_menu())
             
     elif message.text == "💬 Send to Custom Chat":
         msg = bot.send_message(chat_id, "Please send the Username (e.g., @mychannel) or ID of the channel/group.\nMake sure I am an admin there!", reply_markup=get_cancel_menu())
@@ -152,6 +180,7 @@ def process_custom_publish(message):
         bot.send_message(chat_id, "Session expired.", reply_markup=get_main_menu())
         return
         
+    photo = user_posts[chat_id]['photo']
     text = user_posts[chat_id]['text']
     btn_name = user_posts[chat_id]['btn_name']
     btn_url = user_posts[chat_id]['btn_url']
@@ -160,7 +189,11 @@ def process_custom_publish(message):
     inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
     
     try:
-        bot.send_message(target_chat, text, reply_markup=inline_markup)
+        if photo:
+            bot.send_photo(target_chat, photo, caption=text, parse_mode="HTML", reply_markup=inline_markup)
+        else:
+            bot.send_message(target_chat, text, parse_mode="HTML", reply_markup=inline_markup)
+            
         bot.send_message(chat_id, f"Successfully published to {target_chat}!", reply_markup=get_main_menu())
         del user_posts[chat_id]
     except Exception as e:
