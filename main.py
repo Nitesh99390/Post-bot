@@ -25,7 +25,6 @@ app = Flask(__name__)
 
 user_posts = {}
 
-# HTML Template fully translated to English
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
