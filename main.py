@@ -6,21 +6,21 @@ import requests
 import time
 import os
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YAHAN_APNA_TOKEN_DALEIN")
-APP_LINK = os.environ.get("APP_LINK", "https://aapka-render-link.onrender.com")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "यहाँ_अपना_टोकन_डालें")
+APP_LINK = os.environ.get("APP_LINK", "https://आपका-रेंडर-लिंक.onrender.com")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot bilkul sahi chal raha hai!"
+    return "बॉट सही तरीके से काम कर रहा है!"
 
 def ping_system():
     while True:
         time.sleep(300) 
         try:
-            if APP_LINK != "https://aapka-render-link.onrender.com":
+            if APP_LINK != "https://आपका-रेंडर-लिंक.onrender.com":
                 requests.get(APP_LINK)
         except:
             pass
@@ -30,12 +30,12 @@ def start_message(message):
     markup = InlineKeyboardMarkup()
     markup.row_width = 1
 
-    btn1 = InlineKeyboardButton("Channel Join Karein", url="https://t.me/novelxplin")
-    btn2 = InlineKeyboardButton("Mini App Kholein", web_app=WebAppInfo(url="https://novelxplain.odoo.com"))
+    btn1 = InlineKeyboardButton("चैनल से जुड़ें", url="https://t.me/novelxplin")
+    btn2 = InlineKeyboardButton("मिनी ऐप खोलें", web_app=WebAppInfo(url="https://novelxplain.odoo.com"))
     
     markup.add(btn1, btn2)
 
-    text = "Namaste! Main aapka naya post bot hoon. Kripya niche diye gaye button ka use karein."
+    text = "नमस्ते! मैं आपका नया पोस्ट बॉट हूँ। कृपया नीचे दिए गए बटन का उपयोग करें।"
     bot.send_message(message.chat.id, text, reply_markup=markup)
 
 def run_flask():
