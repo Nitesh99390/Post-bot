@@ -26,38 +26,119 @@ app = Flask(__name__)
 
 user_posts = {}
 
-# HTML Template updated to handle multiple buttons
+# Ultra-Modern & Smooth UI Template
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Bot Statistics</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
-        body { font-family: Arial, sans-serif; padding: 15px; background-color: var(--tg-theme-bg-color, #fff); color: var(--tg-theme-text-color, #000); }
-        h2 { color: var(--tg-theme-button-color, #2481cc); font-size: 1.2em; border-bottom: 2px solid var(--tg-theme-button-color, #2481cc); padding-bottom: 5px; margin-top: 20px; }
-        .card { border: 1px solid var(--tg-theme-hint-color, #ccc); padding: 12px; margin-bottom: 12px; border-radius: 8px; background-color: var(--tg-theme-secondary-bg-color, #f4f4f5); }
-        .leaderboard { background-color: var(--tg-theme-secondary-bg-color, #f4f4f5); padding: 12px; border-radius: 8px; margin-bottom: 20px;}
-        .rank-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #ddd; }
+        :root {
+            --primary: var(--tg-theme-button-color, #2481cc);
+            --bg: var(--tg-theme-bg-color, #ffffff);
+            --text: var(--tg-theme-text-color, #000000);
+            --hint: var(--tg-theme-hint-color, #999999);
+            --sec-bg: var(--tg-theme-secondary-bg-color, #f4f4f5);
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 16px;
+            -webkit-font-smoothing: antialiased;
+        }
+        h2 {
+            color: var(--primary);
+            font-size: 1.3em;
+            margin-top: 24px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+        }
+        .card {
+            background-color: var(--sec-bg);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            animation: fadeIn 0.5s ease forwards;
+            opacity: 0;
+        }
+        .leaderboard {
+            background-color: var(--sec-bg);
+            border-radius: 16px;
+            padding: 8px 16px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            animation: fadeIn 0.4s ease forwards;
+        }
+        .rank-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 0;
+            border-bottom: 1px solid rgba(153, 153, 153, 0.2);
+        }
         .rank-item:last-child { border-bottom: none; }
-        .rank-name { font-weight: bold; }
-        .link-box { margin-top: 8px; padding: 8px; background: #e0f7fa; border-radius: 5px; word-break: break-all; font-size: 0.9em; color: #006064;}
-        .hidden-link { margin-top: 8px; padding: 8px; background: #ffebee; border-radius: 5px; font-size: 0.9em; color: #c62828;}
-        .post-text { margin-bottom: 8px; white-space: pre-wrap;}
+        .rank-name { font-weight: 600; font-size: 1.05em; display: flex; align-items: center; gap: 8px;}
+        .rank-score { 
+            font-weight: bold; 
+            color: var(--primary); 
+            background: rgba(36, 129, 204, 0.1); 
+            padding: 4px 12px; 
+            border-radius: 20px; 
+            font-size: 0.85em; 
+        }
+        .link-box { 
+            margin-top: 12px; padding: 12px; 
+            background: rgba(0, 150, 136, 0.1); 
+            border-radius: 10px; word-break: break-all; 
+            font-size: 0.9em; border-left: 4px solid #009688; 
+            color: var(--text);
+            line-height: 1.4;
+        }
+        .link-box a { color: var(--primary); text-decoration: none; font-weight: 600; }
+        .hidden-link { 
+            margin-top: 12px; padding: 12px; 
+            background: rgba(244, 67, 54, 0.1); 
+            border-radius: 10px; font-size: 0.9em; 
+            border-left: 4px solid #f44336; 
+            color: var(--text);
+        }
+        .post-text { margin-bottom: 12px; white-space: pre-wrap; font-size: 1.05em; line-height: 1.4;}
+        .post-meta { margin-top: 12px; font-size: 0.8em; color: var(--hint); display: flex; align-items: center; gap: 5px; font-weight: 500;}
+        
+        .loader {
+            border: 3px solid rgba(0,0,0,0.1);
+            border-top: 3px solid var(--primary);
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+            margin: 30px auto;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     </style>
 </head>
 <body>
     <h2>🏆 Global Leaderboard</h2>
-    <div id="leaderboard" class="leaderboard">Loading...</div>
+    <div id="leaderboard" class="leaderboard"><div class="loader"></div></div>
 
     <h2>📝 Created Posts</h2>
-    <div id="all_posts">Loading...</div>
+    <div id="all_posts"><div class="loader"></div></div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
+        tg.ready();
+        
         const userId = tg.initDataUnsafe?.user?.id || 0;
 
         fetch(`/api/data?user_id=${userId}`)
@@ -66,17 +147,17 @@ HTML_TEMPLATE = """
             let lbHtml = "";
             if (data.leaderboard && data.leaderboard.length > 0) {
                 data.leaderboard.forEach((u, index) => {
-                    let medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "🔹";
-                    lbHtml += `<div class="rank-item"><span class="rank-name">${medal} ${u.username || 'Unknown User'}</span> <span>${u.total_posts} Posts</span></div>`;
+                    let medal = index === 0 ? "🥇" : index === 1 ? "🥈" : index === 2 ? "🥉" : "👤";
+                    lbHtml += `<div class="rank-item"><span class="rank-name">${medal} ${u.username || 'Unknown'}</span> <span class="rank-score">${u.total_posts} Posts</span></div>`;
                 });
             } else {
-                lbHtml = "No data available yet.";
+                lbHtml = "<div style='padding: 10px 0; text-align: center; color: var(--hint);'>No data available yet.</div>";
             }
             document.getElementById('leaderboard').innerHTML = lbHtml;
 
             let postsHtml = "";
             if (data.posts && data.posts.length > 0) {
-                data.posts.forEach(p => {
+                data.posts.forEach((p, index) => {
                     let btnNamesStr = p.btn_name;
                     let btnUrlsStr = p.btn_url;
                     let linksHtml = "";
@@ -85,38 +166,39 @@ HTML_TEMPLATE = """
                     try {
                         let names = JSON.parse(btnNamesStr);
                         let urls = JSON.parse(btnUrlsStr);
-                        displayedNames = names.join(' | ');
+                        displayedNames = names.join(' • ');
                         
                         if (p.show_link) {
                             urls.forEach((u, i) => {
-                                linksHtml += `<div class="link-box">🔗 <b>Button ${i+1}:</b> <a href="${u}" target="_blank">${u}</a></div>`;
+                                linksHtml += `<div class="link-box">🔗 <b>Button ${i+1}:</b> <br><a href="${u}" target="_blank">${u}</a></div>`;
                             });
                         } else {
-                            linksHtml = `<div class="hidden-link">🔒 <b>${names.length} Link(s) hidden</b> (Visible only to creator & Admin)</div>`;
+                            linksHtml = `<div class="hidden-link">🔒 <b>${names.length} Link(s) hidden</b> <br><span style="font-size:0.9em; opacity:0.8;">(Visible only to creator & Admin)</span></div>`;
                         }
                     } catch(e) {
                         if (p.show_link) {
-                            linksHtml = `<div class="link-box">🔗 <b>Link:</b> <a href="${btnUrlsStr}" target="_blank">${btnUrlsStr}</a></div>`;
+                            linksHtml = `<div class="link-box">🔗 <b>Link:</b> <br><a href="${btnUrlsStr}" target="_blank">${btnUrlsStr}</a></div>`;
                         } else {
-                            linksHtml = `<div class="hidden-link">🔒 <b>Link hidden</b> (Visible only to creator & Admin)</div>`;
+                            linksHtml = `<div class="hidden-link">🔒 <b>Link hidden</b> <br><span style="font-size:0.9em; opacity:0.8;">(Visible only to creator & Admin)</span></div>`;
                         }
                     }
                     
-                    postsHtml += `<div class="card">
-                        <div class="post-text"><b>Message:</b> ${p.message_text}</div>
-                        <div><b>Buttons:</b> ${displayedNames}</div>
-                        <div style="margin-top:8px; font-size:0.8em; color:gray;">👤 Creator ID: ${p.user_id}</div>
+                    let animDelay = index * 0.1;
+                    postsHtml += `<div class="card" style="animation-delay: ${animDelay}s;">
+                        <div class="post-text">${p.message_text}</div>
+                        <div style="font-weight:600; margin-bottom: 8px;">🔘 ${displayedNames}</div>
                         ${linksHtml}
+                        <div class="post-meta">🆔 Creator ID: ${p.user_id}</div>
                     </div>`;
                 });
             } else {
-                postsHtml = "No posts available yet.";
+                postsHtml = "<div style='text-align: center; color: var(--hint); padding: 20px 0;'>No posts available yet.</div>";
             }
             document.getElementById('all_posts').innerHTML = postsHtml;
         })
         .catch(err => {
-            document.getElementById('leaderboard').innerHTML = "Failed to load leaderboard.";
-            document.getElementById('all_posts').innerHTML = "Failed to load posts.";
+            document.getElementById('leaderboard').innerHTML = "<div style='color: #f44336; text-align:center; padding: 10px;'>Failed to load data.</div>";
+            document.getElementById('all_posts').innerHTML = "";
         });
     </script>
 </body>
@@ -263,16 +345,13 @@ def finish_post_creation(message):
     buttons = user_posts[chat_id]['buttons']
     text = user_posts[chat_id]['text']
     
-    # Process inline buttons
     inline_markup = InlineKeyboardMarkup()
     for btn in buttons:
         inline_markup.add(InlineKeyboardButton(btn['name'], url=btn['url']))
         
-    # Serialize for database
     names_json = json.dumps([b['name'] for b in buttons])
     urls_json = json.dumps([b['url'] for b in buttons])
     
-    # Save to database immediately
     username = message.from_user.username or message.from_user.first_name
     user_id = message.from_user.id
     save_to_supabase(user_id, username, text, names_json, urls_json)
