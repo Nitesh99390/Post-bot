@@ -48,7 +48,7 @@ def get_publish_menu():
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    text = "Welcome to the Professional Post Bot!\nUse the keyboard below to navigate."
+    text = "Welcome! Use the keyboard below to navigate."
     bot.send_message(message.chat.id, text, reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "❌ Cancel")
@@ -59,7 +59,7 @@ def cancel_action(message):
 
 @bot.message_handler(func=lambda message: message.text == "ℹ️ Help")
 def help_action(message):
-    help_text = "I can help you create professional posts with inline buttons.\n\nClick on '📝 Create Post' to start building a post. You can send it directly to your channel from here."
+    help_text = "I can help you create posts with inline buttons.\n\nClick on '📝 Create Post' to start. You can send it directly to your channel from here."
     bot.send_message(message.chat.id, help_text, reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "📝 Create Post")
@@ -81,7 +81,7 @@ def process_button_name(message):
         return cancel_action(message)
     
     user_posts[message.chat.id]['btn_name'] = message.text
-    msg = bot.send_message(message.chat.id, "Awesome! Now send the URL (Link) for this button:\n(Make sure it starts with http:// or https://)")
+    msg = bot.send_message(message.chat.id, "Awesome! Now send the URL (Link) or @username for this button:")
     bot.register_next_step_handler(msg, process_button_url)
 
 def process_button_url(message):
@@ -89,10 +89,12 @@ def process_button_url(message):
         return cancel_action(message)
     
     url = message.text.strip()
-    if not (url.startswith("http://") or url.startswith("https://")):
-        msg = bot.send_message(message.chat.id, "Invalid URL. Please send a valid link starting with http:// or https://")
-        bot.register_next_step_handler(msg, process_button_url)
-        return
+    
+    # Auto-format logic jisse koi bhi link ya username kaam karega
+    if url.startswith("@"):
+        url = f"https://t.me/{url[1:]}"
+    elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+        url = "https://" + url
 
     user_posts[message.chat.id]['btn_url'] = url
     
