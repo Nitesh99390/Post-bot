@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo, MenuButtonWebApp
 from flask import Flask, request, jsonify, render_template_string
 import threading
 import requests
@@ -25,6 +25,7 @@ app = Flask(__name__)
 
 user_posts = {}
 
+# HTML Template fully translated to English
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="en">
@@ -50,7 +51,7 @@ HTML_TEMPLATE = """
     <h2>🏆 Global Leaderboard</h2>
     <div id="leaderboard" class="leaderboard">Loading...</div>
 
-    <h2>📝 Published Posts</h2>
+    <h2>📝 Created Posts</h2>
     <div id="all_posts">Loading...</div>
 
     <script>
@@ -147,8 +148,6 @@ def ping_system():
 def get_main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
     markup.add(KeyboardButton("📝 Create Post"))
-    markup.add(KeyboardButton("📊 Stats (Mini App)", web_app=WebAppInfo(url=APP_LINK + "/stats")))
-    markup.add(KeyboardButton("❌ Cancel"))
     return markup
 
 def get_cancel_menu():
@@ -165,14 +164,18 @@ def get_publish_menu():
 
 @bot.message_handler(commands=['start'])
 def start_message(message):
-    text = "Hello! I am your post publisher bot.\nPlease use the keyboard below to navigate."
+    try:
+        bot.set_chat_menu_button(message.chat.id, MenuButtonWebApp(type="web_app", text="📊 Stats", web_app=WebAppInfo(url=APP_LINK + "/stats")))
+    except:
+        pass
+    text = "Hello! I am your professional post bot.\nClick '📝 Create Post' to get started."
     bot.send_message(message.chat.id, text, reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "❌ Cancel")
 def cancel_action(message):
     if message.chat.id in user_posts:
         del user_posts[message.chat.id]
-    bot.send_message(message.chat.id, "Action canceled. Returning to main menu.", reply_markup=get_main_menu())
+    bot.send_message(message.chat.id, "Action canceled.", reply_markup=get_main_menu())
 
 @bot.message_handler(func=lambda message: message.text == "📝 Create Post")
 def start_create_post(message):
@@ -196,35 +199,6 @@ def process_button_name(message):
     msg = bot.send_message(message.chat.id, "Awesome! Now send the URL (Link) or @username for this button:")
     bot.register_next_step_handler(msg, process_button_url)
 
-def process_button_url(message):
-    if message.text == "❌ Cancel":
-        return cancel_action(message)
-    
-    url = message.text.strip()
-    
-    if url.startswith("@"):
-        url = f"https://t.me/{url[1:]}"
-    elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
-        url = "https://" + url
-
-    user_posts[message.chat.id]['btn_url'] = url
-    
-    text = user_posts[message.chat.id]['text']
-    btn_name = user_posts[message.chat.id]['btn_name']
-    btn_url = user_posts[message.chat.id]['btn_url']
-    
-    inline_markup = InlineKeyboardMarkup()
-    inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
-    
-    bot.send_message(message.chat.id, "Here is a preview of your post:")
-    try:
-        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=inline_markup)
-        msg = bot.send_message(message.chat.id, "Are you satisfied with this preview? Where do you want to publish it?", reply_markup=get_publish_menu())
-        bot.register_next_step_handler(msg, process_publish_decision)
-    except Exception as e:
-        bot.send_message(message.chat.id, "Error! Please make sure your HTML tags are correct.", reply_markup=get_main_menu())
-        del user_posts[message.chat.id]
-
 def save_to_supabase(user_id, username, text, btn_name, btn_url):
     if not supabase:
         return
@@ -245,6 +219,40 @@ def save_to_supabase(user_id, username, text, btn_name, btn_url):
     except Exception as e:
         pass
 
+def process_button_url(message):
+    if message.text == "❌ Cancel":
+        return cancel_action(message)
+    
+    url = message.text.strip()
+    
+    if url.startswith("@"):
+        url = f"https://t.me/{url[1:]}"
+    elif not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+        url = "https://" + url
+
+    user_posts[message.chat.id]['btn_url'] = url
+    
+    text = user_posts[message.chat.id]['text']
+    btn_name = user_posts[message.chat.id]['btn_name']
+    btn_url = user_posts[message.chat.id]['btn_url']
+    
+    # Save to database immediately as requested
+    username = message.from_user.username or message.from_user.first_name
+    user_id = message.from_user.id
+    save_to_supabase(user_id, username, text, btn_name, btn_url)
+    
+    inline_markup = InlineKeyboardMarkup()
+    inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
+    
+    bot.send_message(message.chat.id, "Here is a preview of your post:")
+    try:
+        bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=inline_markup)
+        msg = bot.send_message(message.chat.id, "Post created and saved! Where do you want to publish it?", reply_markup=get_publish_menu())
+        bot.register_next_step_handler(msg, process_publish_decision)
+    except Exception as e:
+        bot.send_message(message.chat.id, "Error! Please make sure your HTML tags are correct.", reply_markup=get_main_menu())
+        del user_posts[message.chat.id]
+
 def process_publish_decision(message):
     if message.text == "❌ Cancel":
         return cancel_action(message)
@@ -261,13 +269,9 @@ def process_publish_decision(message):
     inline_markup = InlineKeyboardMarkup()
     inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
 
-    username = message.from_user.username or message.from_user.first_name
-    user_id = message.from_user.id
-
     if message.text == f"📢 Send to {DEFAULT_CHANNEL}":
         try:
             bot.send_message(DEFAULT_CHANNEL, text, parse_mode="HTML", reply_markup=inline_markup)
-            save_to_supabase(user_id, username, text, btn_name, btn_url)
             bot.send_message(chat_id, f"Successfully published to {DEFAULT_CHANNEL}!", reply_markup=get_main_menu())
             del user_posts[chat_id]
         except Exception as e:
@@ -296,13 +300,9 @@ def process_custom_publish(message):
     
     inline_markup = InlineKeyboardMarkup()
     inline_markup.add(InlineKeyboardButton(btn_name, url=btn_url))
-    
-    username = message.from_user.username or message.from_user.first_name
-    user_id = message.from_user.id
 
     try:
         bot.send_message(target_chat, text, parse_mode="HTML", reply_markup=inline_markup)
-        save_to_supabase(user_id, username, text, btn_name, btn_url)
         bot.send_message(chat_id, f"Successfully published to {target_chat}!", reply_markup=get_main_menu())
         del user_posts[chat_id]
     except Exception as e:
