@@ -1,7 +1,8 @@
 'use strict';
 // Inline SVGs avoid icon-library downloads and remain crisp at any display scale.
 const icons = {
-  monitor: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
   moon: '<path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
@@ -49,10 +50,12 @@ const pageInfo = {
   community:['Global rank','The creators who keep creating.'],
   profile:['Profile','Your Telegram account.']
 };
+function greetingWord(){const h=new Date().getHours();return h<5?'Good night':h<12?'Good morning':h<17?'Good afternoon':'Good evening';}
 function navigate(page, updateHash=true){
   if(!pageInfo[page])page='overview';state.activePage=page;
   const [title,subtitle]=pageInfo[page];
   $('#page-title').textContent=title;$('#page-subtitle').textContent=subtitle;
+  $('#greeting').hidden=page!=='overview';
   $$('.page').forEach(el=>el.hidden=el.id!==`${page}-page`);
   $$('[data-page]').forEach(el=>{el.classList.toggle('active',el.dataset.page===page);if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   if(updateHash && location.hash !== `#${page}`)history.pushState(null,'',`#${page}`);
@@ -64,7 +67,11 @@ document.addEventListener('click', event=>{
   if(event.target.closest('[data-help]'))$('#help').showModal();
   const close=event.target.closest('[data-close]');if(close)closeModal(close.dataset.close);
 });
-$('.brand').addEventListener('click',()=>navigate('overview'));
+document.addEventListener('keydown', event=>{
+  const row=event.target.closest('.sidebar-user[data-page]');
+  if(row&&(event.key==='Enter'||event.key===' ')){event.preventDefault();navigate(row.dataset.page);}
+});
+$$('.brand').forEach(el=>el.addEventListener('click',()=>navigate('overview')));
 window.addEventListener('hashchange',()=>navigate(location.hash.slice(1),false));
 navigate(location.hash.slice(1)||'overview',false);
 // Header and sidebar help actions share the delegated handler above.
@@ -99,6 +106,7 @@ function renderProfile(){
   $$('.user-name').forEach(el=>el.textContent=name);
   $$('.user-handle').forEach(el=>el.textContent=user.username?`@${user.username}`:'Telegram creator');
   $$('.user-avatar').forEach(el=>{if(!el.querySelector('img'))el.textContent=initials(name);});
+  $('#greeting').textContent=`${greetingWord()}, ${user.first_name||'creator'}`;
   $('#total-posts').textContent=user.total_posts.toLocaleString();$('#profile-total').textContent=user.total_posts.toLocaleString();$('#nav-count').textContent=user.total_posts;$('#profile-id').textContent=user.id;
 }
 function postCard(post){
@@ -121,10 +129,17 @@ function renderLibrary(){
 }
 function renderLeaders(){
   const own = state.leaderboard.findIndex(user => user.is_you);
+  const rankLabel = own>=0?`#${own+1}`:'—';
   $('#profile-rank').textContent=own>=0?`#${own+1}`:'Not in top 100';
+  $('#home-rank').textContent=rankLabel;
   $('#my-rank').hidden=!state.profile;
-  $('#my-rank').innerHTML=`<span>Your rank</span><strong>${own>=0?`#${own+1}`:'Not in top 100 yet'}</strong>`;
-  $('#leaderboard').innerHTML=state.leaderboard.length?state.leaderboard.map((u,i)=>`<div class="leader-row${u.is_you?' is-you':''}"><span class="rank">${String(i+1).padStart(2,'0')}</span><span class="avatar small" style="background:${['#f0e6d7','#e9e2f5','#e0eee7'][i%3]}">${escapeHTML(initials(u.name))}</span><span class="leader-name">${escapeHTML(u.name)}${u.is_you?' · You':''}</span><span class="leader-score">${Number(u.total_posts).toLocaleString()}</span></div>`).join(''):emptyState('Be the first creator','Save a post to join the ranking.');
+  $('#my-rank').innerHTML=`<span>Your current rank</span><strong>${own>=0?`#${own+1}`:'Not in top 100 yet'}</strong>`;
+  const palette=['#f6e3cf','#e9e2f5','#dcefe6','#fbe1e6'];
+  const avatarFor=(u,i)=>`<span class="avatar small" style="background:${palette[i%palette.length]}">${escapeHTML(initials(u.name))}</span>`;
+  const top=state.leaderboard.slice(0,3);
+  $('#podium').hidden=top.length<3;
+  $('#podium').innerHTML=top.map((u,i)=>`<div class="podium-card"><span class="podium-medal">#${i+1}</span>${avatarFor(u,i)}<span class="podium-name">${escapeHTML(u.name)}${u.is_you?' · You':''}</span><span class="podium-score"><b>${Number(u.total_posts).toLocaleString()}</b> posts</span></div>`).join('');
+  $('#leaderboard').innerHTML=state.leaderboard.length?state.leaderboard.map((u,i)=>`<div class="leader-row${u.is_you?' is-you':''}"><span class="rank">${String(i+1).padStart(2,'0')}</span>${avatarFor(u,i)}<span class="leader-name">${escapeHTML(u.name)}${u.is_you?' · You':''}</span><span class="leader-score">${Number(u.total_posts).toLocaleString()}</span></div>`).join(''):emptyState('Be the first creator','Save a post to join the ranking.');
 }
 $$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{state.filter=button.dataset.filter;$$('[data-filter]').forEach(b=>{b.classList.toggle('selected',b===button);b.setAttribute('aria-pressed',String(b===button));});renderLibrary();haptic();}));
 $('#post-search').addEventListener('input',renderLibrary);
@@ -225,6 +240,7 @@ $('#add-button').addEventListener('click',()=>{
   const row=document.createElement('div');row.className='button-row';
   row.innerHTML=`<input aria-label="Button label" placeholder="Button label" maxlength="64" required><input aria-label="Button destination" placeholder="https:// or @username" maxlength="2048" required><button class="icon-button" type="button" aria-label="Remove button">${icon('close')}</button>`;
   $('button',row).addEventListener('click',()=>{row.remove();$('#add-button').disabled=false;state.submissionKey=null;updatePreview();});$('#button-fields').append(row);$('input',row).focus();$('#add-button').disabled=$$('.button-row').length>=10;
+  $('#button-options').open=true;
 });
 function showComposeError(message){$('#compose-error').textContent=message;$('#compose-error').hidden=false;$('#compose-error').scrollIntoView({block:'nearest'});}
 function setComposerBusy(busy){
@@ -295,52 +311,34 @@ function updatePreview() {
   });
 }
 
-// Preferences are the only data persisted in the browser. Drafts and links are not.
-// Change only the layout: never reload, rewrite Telegram initData, or save drafts.
-const layoutStorageKey = 'poststudio-layout';
-function setLayout(mode, persist = false) {
-  const desktop = mode === 'desktop';
-  document.documentElement.dataset.layout = desktop ? 'desktop' : 'auto';
-  $$('[data-layout-toggle]').forEach(button => {
-    button.setAttribute('aria-pressed', String(desktop));
-    button.title = desktop ? 'Turn off desktop mode' : 'Open the wide desktop layout';
-  });
-  $$('[data-layout-state]').forEach(label => { label.textContent = desktop ? 'On' : 'Off'; });
-  $('[data-layout-caption]').textContent = desktop ? 'Desktop layout' : 'Auto layout';
-  $('[data-desktop-hint]').hidden = !desktop;
-  if (persist) {
-    try { localStorage.setItem(layoutStorageKey, desktop ? 'desktop' : 'auto'); }
-    catch (_) { /* The switch still works when storage is unavailable. */ }
-  }
-  // Bring content into view; the fixed toolbar stays reachable while panning.
-  window.scrollTo({ left: 0, top: window.scrollY, behavior: 'instant' });
-}
-let savedLayout;
-try { savedLayout = localStorage.getItem(layoutStorageKey); } catch (_) { /* Default to auto. */ }
-setLayout(savedLayout);
-$$('[data-layout-toggle]').forEach(button => button.addEventListener('click', () => {
-  const desktop = document.documentElement.dataset.layout !== 'desktop';
-  setLayout(desktop ? 'desktop' : 'auto', true);
-  haptic();
-  toast(desktop ? 'Desktop mode on. On smaller screens, swipe sideways to explore.' : 'Desktop mode off. Layout now fits your screen automatically.');
-}));
-
-function setTheme(theme) {
-  const dark = theme === 'dark';
+// Theme preference is the only data persisted in the browser. Drafts and links are not.
+// The layout always adapts to the screen: sidebar on wide screens, tab bar on phones.
+const systemDark = matchMedia('(prefers-color-scheme: dark)');
+const THEME_COLORS = { light: '#f4f5fa', dark: '#0f0f17' };
+function setTheme(choice, persist = true) {
+  const mode = ['light', 'dark', 'system'].includes(choice) ? choice : 'system';
+  const dark = mode === 'dark' || (mode === 'system' && systemDark.matches);
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
-  $('#theme-toggle').innerHTML = icon(dark ? 'sun' : 'moon');
-  $('#theme-toggle').setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
-  $('meta[name="theme-color"]').content = dark ? '#15151e' : '#f8f9fc';
-  try { localStorage.setItem('poststudio-theme', theme); } catch (_) { /* Private browsing may block storage. */ }
-  try { if(tg?.isVersionAtLeast?.('6.1')) { tg.setHeaderColor(dark ? '#15151e' : '#f8f9fc'); tg.setBackgroundColor(dark ? '#15151e' : '#f8f9fc'); } } catch (_) { /* Older clients retain their theme. */ }
+  const toggleIcon = icon(dark ? 'sun' : 'moon');
+  const toggleLabel = `Switch to ${dark ? 'light' : 'dark'} mode`;
+  $('#theme-toggle').innerHTML = `${toggleIcon}<span>${dark ? 'Light mode' : 'Dark mode'}</span>`;
+  $('#theme-toggle').setAttribute('aria-label', toggleLabel);
+  $('#theme-toggle-mobile').innerHTML = toggleIcon;
+  $('#theme-toggle-mobile').setAttribute('aria-label', toggleLabel);
+  $$('[data-theme-choice]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.themeChoice === mode)));
+  $('meta[name="theme-color"]').content = dark ? THEME_COLORS.dark : THEME_COLORS.light;
+  if (persist) { try { localStorage.setItem('poststudio-theme', mode); } catch (_) { /* Private browsing may block storage. */ } }
+  try { if (tg?.isVersionAtLeast?.('6.1')) { tg.setHeaderColor(dark ? THEME_COLORS.dark : THEME_COLORS.light); tg.setBackgroundColor(dark ? THEME_COLORS.dark : THEME_COLORS.light); } } catch (_) { /* Older clients retain their theme. */ }
+  try { if (tg?.isVersionAtLeast?.('7.10')) tg.setBottomBarColor?.(dark ? '#181824' : '#ffffff'); } catch (_) { /* Optional. */ }
 }
 let savedTheme;
 try { savedTheme = localStorage.getItem('poststudio-theme'); } catch (_) { /* Use the system default. */ }
-setTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
-$('#theme-toggle').addEventListener('click', () => {
-  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
-  haptic();
-});
+setTheme(savedTheme || 'system', false);
+systemDark.addEventListener?.('change', () => { let mode; try { mode = localStorage.getItem('poststudio-theme'); } catch (_) {} if (!mode || mode === 'system') setTheme('system', false); });
+function flipTheme() { setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'); haptic(); }
+$('#theme-toggle').addEventListener('click', flipTheme);
+$('#theme-toggle-mobile').addEventListener('click', flipTheme);
+$$('[data-theme-choice]').forEach(button => button.addEventListener('click', () => { setTheme(button.dataset.themeChoice); haptic(); }));
 
 $('#compose-form').addEventListener('input', () => { state.submissionKey = null; updatePreview(); });
 $('#compose-form').addEventListener('change', () => { state.submissionKey = null; });
@@ -396,7 +394,7 @@ document.addEventListener('keydown', event => {
   if (event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.isComposing) return;
   if (event.target.closest('input, textarea, select, [contenteditable="true"]') || $('dialog[open]')) return;
   if (event.key.toLowerCase() === 'n') { event.preventDefault(); openComposer(); }
-  if (event.key === '/') { event.preventDefault(); navigate('posts'); $('.library-options').open=true; $('#post-search').focus(); }
+  if (event.key === '/') { event.preventDefault(); navigate('posts'); $('#post-search').focus(); }
 });
 window.addEventListener('beforeunload', event => {
   if ($('#post-text').value.trim() || $('#photo-input').files.length || state.busy) {
