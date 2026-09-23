@@ -1,6 +1,7 @@
 'use strict';
 // Inline SVGs avoid icon-library downloads and remain crisp at any display scale.
 const icons = {
+  monitor: '<rect x="3" y="3" width="18" height="13" rx="2"/><path d="M8 21h8M12 16v5"/>',
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/>',
   moon: '<path d="M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5 19 19M5 19l1.5-1.5M17.5 6.5 19 5"/>',
@@ -37,20 +38,21 @@ hydrateIcons();
 const tg = window.Telegram?.WebApp;
 const initData = tg?.initData || '';
 const demo = document.body.dataset.demo === 'true' && !initData;
-const state = {posts:[], profile:null, leaderboard:[], page:0, hasMore:false, filter:'all', activePage:'overview', busy:false, photoURL:null, photoCache:new Map(), mediaJobs:new Map(), ready:false, loading:false, selectedPost:null, submissionKey:null};
+const state = {posts:[], profile:null, leaderboard:[], page:0, hasMore:false, filter:'all', activePage:'overview', busy:false, photoURL:null, photoCache:new Map(), mediaJobs:new Map(), ready:false, loading:false, selectedPost:null, submissionKey:null, sending:false};
 const headers = {'X-Telegram-Init-Data': initData};
 try{tg?.ready();tg?.expand();if(tg?.isVersionAtLeast?.('6.1')){tg.setHeaderColor('#f8f9fc');tg.setBackgroundColor('#f8f9fc');}}catch(_){/* Older Telegram clients use safe defaults. */}
+try{if(initData&&tg?.isVersionAtLeast?.('8.0'))tg.requestFullscreen?.();}catch(_){/* Expanded mode remains available on unsupported clients. */}
 function haptic(){try{if(tg?.isVersionAtLeast?.('6.1'))tg.HapticFeedback?.selectionChanged();}catch(_){}}
 const pageInfo = {
-  overview:['Overview','YOUR SPACE TO CREATE','A little inspiration. A lot of possibility.','Bring your ideas to life, one great post at a time.'],
-  posts:['My posts','EVERY IDEA HAS A HOME','Your personal collection.','The photos, thoughts, and stories you’ve made your own.'],
-  community:['Leaderboard','GOOD THINGS ARE BETTER TOGETHER','Meet the makers.','A community of creators with something to share.'],
-  profile:['My profile','THIS SPACE BELONGS TO YOU','The person behind the posts.','Your Telegram identity. Your own little corner of the internet.']
+  overview:['Your studio','Create. Save. Share.'],
+  posts:['Saved posts','Keep it here. Send it later.'],
+  community:['Global rank','The creators who keep creating.'],
+  profile:['Profile','Your Telegram account.']
 };
 function navigate(page, updateHash=true){
   if(!pageInfo[page])page='overview';state.activePage=page;
-  const [name,eyebrow,title,subtitle]=pageInfo[page];
-  $('#page-name').textContent=name;$('#page-eyebrow').textContent=eyebrow;$('#page-title').textContent=title;$('#page-subtitle').textContent=subtitle;
+  const [title,subtitle]=pageInfo[page];
+  $('#page-title').textContent=title;$('#page-subtitle').textContent=subtitle;
   $$('.page').forEach(el=>el.hidden=el.id!==`${page}-page`);
   $$('[data-page]').forEach(el=>{el.classList.toggle('active',el.dataset.page===page);if(el.dataset.page===page)el.setAttribute('aria-current','page');else el.removeAttribute('aria-current');});
   if(updateHash && location.hash !== `#${page}`)history.pushState(null,'',`#${page}`);
@@ -67,8 +69,8 @@ window.addEventListener('hashchange',()=>navigate(location.hash.slice(1),false))
 navigate(location.hash.slice(1)||'overview',false);
 // Header and sidebar help actions share the delegated handler above.
 $('#dismiss-demo').addEventListener('click',()=>$('#demo-banner').hidden=true);
-function closeModal(id){if(id==='composer'&&state.busy)return;document.getElementById(id).close();}
-$$('dialog').forEach(dialog=>{dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal(dialog.id);}});dialog.addEventListener('cancel',e=>{if(dialog.id==='composer'&&state.busy)e.preventDefault();});});
+function closeModal(id){if((id==='composer'&&state.busy)||(id==='detail'&&state.sending))return;document.getElementById(id).close();}
+$$('dialog').forEach(dialog=>{dialog.addEventListener('click',e=>{if(e.target===dialog){const r=dialog.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal(dialog.id);}});dialog.addEventListener('cancel',e=>{if((dialog.id==='composer'&&state.busy)||(dialog.id==='detail'&&state.sending))e.preventDefault();});});
 let toastTimer;
 function toast(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').hidden=false;toastTimer=setTimeout(()=>$('#toast').hidden=true,6000);}
 function dateLabel(value){if(!value)return 'Saved post';const d=new Date(value);return Number.isNaN(d.getTime())?'Saved post':d.toLocaleDateString('en-GB',{month:'short',day:'numeric'});}
@@ -95,19 +97,18 @@ function renderProfile(){
   const user=state.profile;if(!user)return;
   const name=[user.first_name,user.last_name].filter(Boolean).join(' ')||'Creator';
   $$('.user-name').forEach(el=>el.textContent=name);
-  $$('.user-handle').forEach(el=>el.textContent=user.username?`@${user.username}`:'Your personal creative space');
+  $$('.user-handle').forEach(el=>el.textContent=user.username?`@${user.username}`:'Telegram creator');
   $$('.user-avatar').forEach(el=>{if(!el.querySelector('img'))el.textContent=initials(name);});
   $('#total-posts').textContent=user.total_posts.toLocaleString();$('#profile-total').textContent=user.total_posts.toLocaleString();$('#nav-count').textContent=user.total_posts;$('#profile-id').textContent=user.id;
 }
 function postCard(post){
-  const lines=post.text.split('\n').filter(Boolean);const title=lines[0]||'A little visual inspiration';
+  const lines=post.text.split('\n').filter(Boolean);const title=lines[0]||'Photo post';
   const visual=post.has_photo?`<div class="post-visual"><img class="post-image" alt="Photo attached to your post" loading="lazy" data-photo="${escapeHTML(post.id)}"><span class="post-type">${icon('image')} Photo post</span></div>`:`<div class="post-visual text-art"><span class="post-type">${icon('text')} Text post</span><span class="quote-mark">“</span><p>${escapeHTML(title)}</p></div>`;
-  return `<article class="post-card">${visual}<div class="post-body"><h3>${escapeHTML(title)}</h3><p class="post-excerpt">${escapeHTML(lines.slice(1).join(' ')||'An idea worth keeping. A story worth sharing.')}</p><div class="post-bottom"><span>${icon('calendar')}${escapeHTML(dateLabel(post.created_at))}</span><span class="saved-badge">${icon('check-circle')}In your library</span></div></div><button class="post-open" data-post="${escapeHTML(post.id)}" aria-label="Open post: ${escapeHTML(title.slice(0,80))}"></button></article>`;
+  return `<article class="post-card">${visual}<div class="post-body"><h3>${escapeHTML(title)}</h3><div class="post-bottom"><span>${icon('calendar')}${escapeHTML(dateLabel(post.created_at))}</span><span class="saved-badge">${icon('check-circle')}Saved</span></div></div><button class="post-open" data-post="${escapeHTML(post.id)}" aria-label="Open post: ${escapeHTML(title.slice(0,80))}"></button></article>`;
 }
 function renderPosts(){
-  $('#photo-count').textContent=state.posts.filter(p=>p.has_photo).length;
-  $('#recent-count').textContent=Math.min(state.posts.length,4);
-  $('#recent-posts').innerHTML=state.posts.length?state.posts.slice(0,4).map(postCard).join(''):emptyState('Your story starts here','A fresh space for your next idea. Create your first post and make it yours.',state.ready);
+  $('#recent-count').textContent=Math.min(state.posts.length,2);
+  $('#recent-posts').innerHTML=state.posts.length?state.posts.slice(0,2).map(postCard).join(''):emptyState('No saved posts yet','Create your first post.',state.ready);
   renderLibrary();loadImages($('#recent-posts'));
 }
 function renderLibrary(){
@@ -115,19 +116,23 @@ function renderLibrary(){
   const posts=state.posts.filter(p=>(state.filter==='all'||(state.filter==='photo')===p.has_photo)&&`${p.text} ${p.button_names.join(' ')}`.toLowerCase().includes(query));
   posts.sort((a,b) => (new Date(b.created_at).getTime() - new Date(a.created_at).getTime()) * ($('#post-sort').value === 'oldest' ? -1 : 1));
   $('#result-count').textContent = `${posts.length} of ${state.posts.length} loaded`;
-  $('#library-posts').innerHTML=posts.length?posts.map(postCard).join(''):emptyState(query||state.filter!=='all'?'No matching posts':'A blank page. Endless possibilities.',query||state.filter!=='all'?'Try a different filter or load more posts to keep exploring.':'Your next photo or thought could be the start of something good.',!query&&state.filter==='all'&&state.ready);
+  $('#library-posts').innerHTML=posts.length?posts.map(postCard).join(''):emptyState(query||state.filter!=='all'?'No matching posts':'No saved posts yet',query||state.filter!=='all'?'Try another filter or load more posts.':'Tap New post to get started.',!query&&state.filter==='all'&&state.ready);
   $('#load-more').hidden=!state.hasMore;loadImages($('#library-posts'));
 }
 function renderLeaders(){
-  $('#leaderboard').innerHTML=state.leaderboard.length?state.leaderboard.map((u,i)=>`<div class="leader-row"><span class="rank">${String(i+1).padStart(2,'0')}</span><span class="avatar small" style="background:${['#f0e6d7','#e9e2f5','#e0eee7'][i%3]}">${escapeHTML(initials(u.name))}</span><span class="leader-name">${escapeHTML(u.name)}</span><span class="leader-score">${Number(u.total_posts).toLocaleString()} posts</span></div>`).join(''):emptyState('Every community starts somewhere','Create a post and help this creative community grow.');
+  const own = state.leaderboard.findIndex(user => user.is_you);
+  $('#profile-rank').textContent=own>=0?`#${own+1}`:'Not in top 100';
+  $('#my-rank').hidden=!state.profile;
+  $('#my-rank').innerHTML=`<span>Your rank</span><strong>${own>=0?`#${own+1}`:'Not in top 100 yet'}</strong>`;
+  $('#leaderboard').innerHTML=state.leaderboard.length?state.leaderboard.map((u,i)=>`<div class="leader-row${u.is_you?' is-you':''}"><span class="rank">${String(i+1).padStart(2,'0')}</span><span class="avatar small" style="background:${['#f0e6d7','#e9e2f5','#e0eee7'][i%3]}">${escapeHTML(initials(u.name))}</span><span class="leader-name">${escapeHTML(u.name)}${u.is_you?' · You':''}</span><span class="leader-score">${Number(u.total_posts).toLocaleString()}</span></div>`).join(''):emptyState('Be the first creator','Save a post to join the ranking.');
 }
 $$('[data-filter]').forEach(button=>button.addEventListener('click',()=>{state.filter=button.dataset.filter;$$('[data-filter]').forEach(b=>{b.classList.toggle('selected',b===button);b.setAttribute('aria-pressed',String(b===button));});renderLibrary();haptic();}));
 $('#post-search').addEventListener('input',renderLibrary);
 $('#load-more').addEventListener('click',()=>loadData(true));
 $('#post-sort').addEventListener('change',renderLibrary);
 $('#refresh-posts').addEventListener('click',async()=>{
-  if(demo){renderPosts();toast('Demo library refreshed. These are sample posts.');return;}
-  if(!initData){toast('Open your workspace in Telegram to load your posts.');return;}
+  if(demo){renderPosts();toast('Sample posts refreshed.');return;}
+  if(!initData){toast('Open the mini app in Telegram.');return;}
   await loadData(false);
 });
 async function loadData(more=false){
@@ -142,7 +147,7 @@ async function loadData(more=false){
     state.profile=data.profile;state.leaderboard=data.leaderboard;state.page=data.page;state.hasMore=data.has_more;state.ready=true;
     state.posts=more?[...new Map([...state.posts,...data.posts].map(p=>[p.id,p])).values()]:data.posts;
     renderProfile();renderPosts();renderLeaders();
-  }catch(error){if(!more){showStatus('Your studio will be right here.',error.message,true);if(!state.ready){$('#recent-posts').innerHTML=emptyState('Unable to load your library','Your posts have not been changed. Try again in a moment.');$('#library-posts').innerHTML=$('#recent-posts').innerHTML;}}else toast(error.message);}
+  }catch(error){if(!more){showStatus('Could not load posts',error.message,true);if(!state.ready){$('#recent-posts').innerHTML=emptyState('Unable to load your library','Your posts have not been changed. Try again in a moment.');$('#library-posts').innerHTML=$('#recent-posts').innerHTML;}}else toast(error.message);}
   finally{state.loading=false;$('#load-more').disabled=false;$('#refresh-posts').disabled=false;$('#library-posts').setAttribute('aria-busy','false');}
 }
 async function mediaURL(path){
@@ -166,21 +171,49 @@ async function attachImage(image){
 }
 const photoObserver='IntersectionObserver' in window?new IntersectionObserver(entries=>entries.forEach(entry=>{if(entry.isIntersecting){photoObserver.unobserve(entry.target);attachImage(entry.target);}}),{rootMargin:'120px'}):null;
 function loadImages(root){$$('[data-photo]',root).forEach(image=>photoObserver?photoObserver.observe(image):attachImage(image));}
-async function loadAvatar(){try{const url=await mediaURL('/api/profile/photo');if(url)$$('.user-avatar').forEach(el=>{const image=new Image();image.alt='';image.src=url;el.append(image);});}catch(_){/* Initials remain a useful, accessible fallback. */}}
+async function loadAvatar(){try{const url=await mediaURL('/api/profile/photo');if(url)$$('.user-avatar').forEach(el=>{const image=new Image();image.alt='Your Telegram profile photo';image.src=url;image.onerror=()=>image.remove();el.append(image);});}catch(_){/* Fall back to initials. */}}
 document.addEventListener('click',event=>{
   const button=event.target.closest('[data-post]');if(!button)return;
   const post=state.posts.find(p=>p.id===button.dataset.post);if(!post)return;
   state.selectedPost=post;
-  $('#detail-content').innerHTML=`<div class="detail-meta">${escapeHTML(dateLabel(post.created_at))} · Saved to your private library</div>${post.has_photo?`<img class="detail-photo" data-photo="${escapeHTML(post.id)}" alt="Your post photo">`:''}<p class="detail-text">${escapeHTML(post.text)}</p>${post.button_names.map(name=>`<div class="detail-button">${escapeHTML(name)}</div>`).join('')}<div class="privacy-hint">${icon('lock')} ${post.button_names.length?'Button labels only. Destinations are private and never sent to this page.':'This post is only visible to you.'}</div>`;
+  $('#send-options').open=false;$('#send-error').hidden=true;$('#send-status').textContent='';$('#send-form').reset();$('#copy-post').innerHTML=icon('copy')+' Copy text';
+  $('#detail-content').innerHTML=`<div class="detail-meta">${escapeHTML(dateLabel(post.created_at))} · Saved</div>${post.has_photo?`<img class="detail-photo" data-photo="${escapeHTML(post.id)}" alt="Your post photo">`:''}<p class="detail-text">${escapeHTML(post.text)}</p>${post.button_names.map(name=>`<div class="detail-button">${escapeHTML(name)}</div>`).join('')}`;
   $('#detail').showModal();loadImages($('#detail-content'));haptic();
 });
+$('#show-send').addEventListener('click',()=>{
+  $('#send-options').open=true;$('#send-options').scrollIntoView({block:'nearest',behavior:'smooth'});$('#share-post').focus();
+});
+async function sendSaved(action,target){
+  if(!state.selectedPost||state.sending)return;
+  $('#send-error').hidden=true;$('#send-status').textContent='';
+  if(demo){$('#send-error').textContent='Demo only. Open the live Telegram mini app to send saved posts.';$('#send-error').hidden=false;return;}
+  if(action==='share'&&(!tg?.isVersionAtLeast?.('8.0')||typeof tg.shareMessage!=='function')){
+    $('#send-error').textContent='Update Telegram to choose a chat here. Or use Send to my bot, then forward the post.';$('#send-error').hidden=false;return;
+  }
+  state.sending=true;
+  $$('#send-options button, #send-options input, #show-send').forEach(el=>el.disabled=true);
+  $('#send-status').textContent=action==='share'?'Preparing your post…':'Sending…';
+  try{
+    const result=await api(`/api/posts/${encodeURIComponent(state.selectedPost.id)}/send`,{
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,target})
+    });
+    if(action==='share'){
+      $('#send-status').textContent='Choose a chat in Telegram.';
+      tg.shareMessage(result.prepared_id,sent=>{$('#send-status').textContent=sent?'Post shared.':'Not shared. You can try again.';});
+    }else $('#send-status').textContent=action==='self'?'Sent to your bot. You can forward it from there.':'Post sent to your channel.';
+  }catch(error){$('#send-status').textContent='';$('#send-error').textContent=error.message;$('#send-error').hidden=false;}
+  finally{state.sending=false;$$('#send-options button, #send-options input, #show-send').forEach(el=>el.disabled=false);}
+}
+$('#share-post').addEventListener('click',()=>sendSaved('share'));
+$('#send-self').addEventListener('click',()=>sendSaved('self'));
+$('#send-form').addEventListener('submit',event=>{event.preventDefault();sendSaved('publish',$('#send-target').value.trim());});
 function openComposer(){
-  if(!initData&&!demo){toast('Open your profile from the Telegram bot to create a post.');return;}
+  if(!initData&&!demo){toast('Open this mini app from your Telegram bot.');return;}
   $('#compose-error').hidden=true;updatePreview();$('#composer').showModal();haptic();
 }
 function countText(){const hasPhoto=Boolean($('#photo-input').files.length);const limit=hasPhoto?1024:4096;$('#post-text').maxLength=limit;$('#char-count').textContent=`${$('#post-text').value.length.toLocaleString()} / ${limit.toLocaleString()}`;$('#char-count').classList.toggle('over-limit',$('#post-text').value.length>limit);updatePreview();}
 $('#post-text').addEventListener('input',countText);
-function clearPhoto(){if(state.photoURL)URL.revokeObjectURL(state.photoURL);state.photoURL=null;$('#photo-input').value='';$('#selected-photo').removeAttribute('src');$('#photo-preview').hidden=true;$('#upload-zone').hidden=false;countText();}
+function clearPhoto(){state.submissionKey=null;if(state.photoURL)URL.revokeObjectURL(state.photoURL);state.photoURL=null;$('#photo-input').value='';$('#selected-photo').removeAttribute('src');$('#photo-preview').hidden=true;$('#upload-zone').hidden=false;countText();}
 $('#photo-input').addEventListener('change',()=>{
   const file=$('#photo-input').files[0];if(!file){clearPhoto();return;}
   if(!['image/jpeg','image/png','image/webp'].includes(file.type)||file.size>9*1024*1024){clearPhoto();showComposeError('Choose a JPEG, PNG or WebP photo smaller than 9 MB.');return;}
@@ -188,30 +221,39 @@ $('#photo-input').addEventListener('change',()=>{
 });
 $('#remove-photo').addEventListener('click',clearPhoto);
 $('#add-button').addEventListener('click',()=>{
-  if($$('.button-row').length>=10)return;
+  if(state.busy||$$('.button-row').length>=10)return;
   const row=document.createElement('div');row.className='button-row';
   row.innerHTML=`<input aria-label="Button label" placeholder="Button label" maxlength="64" required><input aria-label="Button destination" placeholder="https:// or @username" maxlength="2048" required><button class="icon-button" type="button" aria-label="Remove button">${icon('close')}</button>`;
-  $('button',row).addEventListener('click',()=>{row.remove();$('#add-button').disabled=false;updatePreview();});$('#button-fields').append(row);$('input',row).focus();$('#add-button').disabled=$$('.button-row').length>=10;
+  $('button',row).addEventListener('click',()=>{row.remove();$('#add-button').disabled=false;state.submissionKey=null;updatePreview();});$('#button-fields').append(row);$('input',row).focus();$('#add-button').disabled=$$('.button-row').length>=10;
 });
 function showComposeError(message){$('#compose-error').textContent=message;$('#compose-error').hidden=false;$('#compose-error').scrollIntoView({block:'nearest'});}
+function setComposerBusy(busy){
+  $$('#compose-form input, #compose-form textarea, #compose-form button').forEach(el=>el.disabled=busy);
+  if(!busy)$('#add-button').disabled=$$('.button-row').length>=10;
+}
+$('#compose-form').addEventListener('invalid',event=>{
+  let parent=event.target.parentElement;
+  while(parent){if(parent.tagName==='DETAILS')parent.open=true;parent=parent.parentElement;}
+},true);
 $('#compose-form').addEventListener('submit',async event=>{
   event.preventDefault();if(state.busy)return;
   const text=$('#post-text').value.trim();const photo=$('#photo-input').files[0];
-  if(!text&&!photo){showComposeError('Write a little something, or add a photo to get started.');return;}
+  if(!text&&!photo){showComposeError('Write a post or add a photo.');return;}
   if(text.length>(photo?1024:4096)){showComposeError(photo?'Photo captions can be up to 1,024 characters.':'Keep your post under 4,096 characters.');return;}
   if(demo){showComposeError('This is a design preview—nothing has been sent. Open the live mini app from your Telegram bot to create a real post.');return;}
   const buttons=$$('.button-row').map(row=>({name:$$('input',row)[0].value.trim(),url:$$('input',row)[1].value.trim()}));
-  const data=new FormData();data.append('text',text);data.append('buttons',JSON.stringify(buttons));if(photo)data.append('photo',photo);
-  state.busy=true;$('#compose-error').hidden=true;$('#submit-post').disabled=true;$('#submit-post').textContent='Creating your preview…';
+  const data=new FormData();data.append('save_only','1');data.append('text',text);data.append('buttons',JSON.stringify(buttons));if(photo)data.append('photo',photo);
+  state.busy=true;$('#compose-error').hidden=true;setComposerBusy(true);$('#submit-post').textContent='Saving…';
   try{
     state.submissionKey ||= crypto.randomUUID();
     const result=await api('/api/compose',{method:'POST',body:data,headers:{'X-Idempotency-Key':state.submissionKey}});
     state.submissionKey=null;
     state.busy=false;$('#composer').close();$('#compose-form').reset();clearPhoto();$('#button-fields').replaceChildren();$('#add-button').disabled=false;
-    toast(result.warning||'Preview sent! Return to your Telegram bot to choose where to publish.');
-    await loadData(false);
+    toast(result.saved?'Post saved. Share it anytime.':result.warning||'Your preview is in Telegram.');
+    $$('#compose-form details').forEach(el=>el.open=false);
+    navigate('posts');await loadData(false);
   }catch(error){showComposeError(error.message);}
-  finally{state.busy=false;$('#submit-post').disabled=false;$('#submit-post').innerHTML='Send preview to Telegram '+icon('send');}
+  finally{state.busy=false;setComposerBusy(false);$('#submit-post').innerHTML='Save post '+icon('check');}
 });
 // Build preview nodes with a strict formatting allowlist; never inject user HTML.
 function updatePreview() {
@@ -221,7 +263,7 @@ function updatePreview() {
   if (!text.trim()) {
     const placeholder = document.createElement('span');
     placeholder.className = 'preview-placeholder';
-    placeholder.textContent = 'Your next great idea goes here…';
+    placeholder.textContent = 'Your post preview…';
     root.append(placeholder);
   } else {
     const parsed = new DOMParser().parseFromString(text, 'text/html');
@@ -254,6 +296,35 @@ function updatePreview() {
 }
 
 // Preferences are the only data persisted in the browser. Drafts and links are not.
+// Change only the layout: never reload, rewrite Telegram initData, or save drafts.
+const layoutStorageKey = 'poststudio-layout';
+function setLayout(mode, persist = false) {
+  const desktop = mode === 'desktop';
+  document.documentElement.dataset.layout = desktop ? 'desktop' : 'auto';
+  $$('[data-layout-toggle]').forEach(button => {
+    button.setAttribute('aria-pressed', String(desktop));
+    button.title = desktop ? 'Turn off desktop mode' : 'Open the wide desktop layout';
+  });
+  $$('[data-layout-state]').forEach(label => { label.textContent = desktop ? 'On' : 'Off'; });
+  $('[data-layout-caption]').textContent = desktop ? 'Desktop layout' : 'Auto layout';
+  $('[data-desktop-hint]').hidden = !desktop;
+  if (persist) {
+    try { localStorage.setItem(layoutStorageKey, desktop ? 'desktop' : 'auto'); }
+    catch (_) { /* The switch still works when storage is unavailable. */ }
+  }
+  // Bring content into view; the fixed toolbar stays reachable while panning.
+  window.scrollTo({ left: 0, top: window.scrollY, behavior: 'instant' });
+}
+let savedLayout;
+try { savedLayout = localStorage.getItem(layoutStorageKey); } catch (_) { /* Default to auto. */ }
+setLayout(savedLayout);
+$$('[data-layout-toggle]').forEach(button => button.addEventListener('click', () => {
+  const desktop = document.documentElement.dataset.layout !== 'desktop';
+  setLayout(desktop ? 'desktop' : 'auto', true);
+  haptic();
+  toast(desktop ? 'Desktop mode on. On smaller screens, swipe sideways to explore.' : 'Desktop mode off. Layout now fits your screen automatically.');
+}));
+
 function setTheme(theme) {
   const dark = theme === 'dark';
   document.documentElement.dataset.theme = dark ? 'dark' : 'light';
@@ -270,21 +341,6 @@ $('#theme-toggle').addEventListener('click', () => {
   setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
   haptic();
 });
-
-const creatorTips = [
-  ['Make your first line count.', 'A good hook starts a conversation. Keep it short, make it yours, and let your photo do the rest.'],
-  ['Give every button a purpose.', 'One clear next step is better than ten distractions. Tell your audience exactly what they’ll find.'],
-  ['A little breathing room helps.', 'Break up long thoughts. A short paragraph and a little white space can make your story easier to follow.'],
-];
-$$('[data-tip]').forEach(button => button.addEventListener('click', () => {
-  const [title, description] = creatorTips[Number(button.dataset.tip)];
-  $('#tip-title').textContent = title;
-  $('#tip-description').textContent = description;
-  $$('[data-tip]').forEach(item => {
-    item.classList.toggle('selected', item === button);
-    item.setAttribute('aria-pressed', String(item === button));
-  });
-}));
 
 $('#compose-form').addEventListener('input', () => { state.submissionKey = null; updatePreview(); });
 $('#compose-form').addEventListener('change', () => { state.submissionKey = null; });
@@ -330,7 +386,7 @@ $('#copy-post').addEventListener('click', async () => {
   try {
     await navigator.clipboard.writeText(state.selectedPost.text);
     button.innerHTML = icon('check') + ' Copied!';
-    setTimeout(() => { button.innerHTML = icon('copy') + ' Copy displayed text'; }, 2000);
+    setTimeout(() => { button.innerHTML = icon('copy') + ' Copy text'; }, 2000);
   } catch (_) {
     button.textContent = 'Select the text above to copy it';
   }
@@ -340,7 +396,7 @@ document.addEventListener('keydown', event => {
   if (event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.isComposing) return;
   if (event.target.closest('input, textarea, select, [contenteditable="true"]') || $('dialog[open]')) return;
   if (event.key.toLowerCase() === 'n') { event.preventDefault(); openComposer(); }
-  if (event.key === '/') { event.preventDefault(); navigate('posts'); $('#post-search').focus(); }
+  if (event.key === '/') { event.preventDefault(); navigate('posts'); $('.library-options').open=true; $('#post-search').focus(); }
 });
 window.addEventListener('beforeunload', event => {
   if ($('#post-text').value.trim() || $('#photo-input').files.length || state.busy) {
@@ -352,17 +408,18 @@ window.addEventListener('offline', () => toast('You’re offline. Your current d
 window.addEventListener('online', () => toast('You’re back online. Ready when you are.'));
 
 function loadDemo(){
-  $('#demo-banner').hidden=false;$('#connection').innerHTML='<span class="status-dot"></span> Design preview';
+  $('#demo-banner').hidden=false;
   state.profile={id:123456789,first_name:'Alex',last_name:'Morgan',username:'alexcreates',total_posts:4};
   const now=Date.now();
   state.posts=[
-    {id:'sample-1',text:'A fresh perspective.\nSometimes all you need is a little distance to see things differently. Here’s to finding inspiration in the everyday.',has_photo:true,demo_image:'https://sspark.genspark.ai/i/liPaEjkeyWnhSN7L?width=2560',button_names:['Explore more'],created_at:new Date(now-3600000).toISOString()},
+    {id:'sample-1',text:'A fresh perspective.\nSometimes all you need is a little distance to see things differently. Here’s to finding inspiration in the everyday.',has_photo:true,demo_image:'/static/demo-mountains.webp',button_names:['Explore more'],created_at:new Date(now-3600000).toISOString()},
     {id:'sample-2',text:'Small steps.\nBeautiful things.\nA reminder to keep showing up, even on the quiet days. Progress doesn’t always need to be loud.',has_photo:false,button_names:[],created_at:new Date(now-86400000).toISOString()},
-    {id:'sample-3',text:'Chasing the golden hour.\nA moment of stillness before the world wakes up. Save a little space for the things that make you pause.',has_photo:true,demo_image:'https://sspark.genspark.ai/i/bayWHPFQZlmtDZhb?width=2560',button_names:['See the story'],created_at:new Date(now-172800000).toISOString()},
+    {id:'sample-3',text:'Chasing the golden hour.\nA moment of stillness before the world wakes up. Save a little space for the things that make you pause.',has_photo:true,demo_image:'/static/demo-ocean.webp',button_names:['See the story'],created_at:new Date(now-172800000).toISOString()},
     {id:'sample-4',text:'Your next chapter starts now.\nA blank page isn’t empty. It’s full of possibilities. What will you make today?',has_photo:false,button_names:['Join the conversation'],created_at:new Date(now-259200000).toISOString()}
   ];
-  state.leaderboard=[{name:'Maya Chen',total_posts:38},{name:'Arjun Patel',total_posts:32},{name:'Sofia Rivera',total_posts:27},{name:'Jamie Park',total_posts:19},{name:'Alex Morgan',total_posts:4}];state.ready=true;
+  state.leaderboard=Array.from({length:100},(_,i)=>({name:['Maya Chen','Arjun Patel','Sofia Rivera','Jamie Park'][i]||`Sample creator ${i+1}`,total_posts:400-i*4,is_you:i===99}));
+  state.leaderboard[99].name='Alex Morgan';state.ready=true;
   renderProfile();renderPosts();renderLeaders();
 }
-if(demo)loadDemo();else if(initData){loadData();loadAvatar();}else{showStatus('Your private studio lives in Telegram.','Open “My profile” from your bot to securely see your own profile and posts.');$('#recent-posts').innerHTML=emptyState('A space that’s just for you','Your library will appear after you open this mini app from Telegram.');$('#library-posts').innerHTML=$('#recent-posts').innerHTML;$('#leaderboard').innerHTML=emptyState('Meet your community in Telegram','Open the mini app from your bot to see the creator leaderboard.');}
+if(demo)loadDemo();else if(initData){loadData();loadAvatar();}else{showStatus('Open in Telegram','Launch the mini app from your bot to see your posts.');$('#recent-posts').innerHTML=emptyState('Your saved posts','Sign in through Telegram to continue.');$('#library-posts').innerHTML=$('#recent-posts').innerHTML;$('#leaderboard').innerHTML=emptyState('Meet your community in Telegram','Open the mini app from your bot to see the creator leaderboard.');}
 window.addEventListener('pagehide',()=>{for(const url of state.photoCache.values())URL.revokeObjectURL(url);state.photoCache.clear();});

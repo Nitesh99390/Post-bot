@@ -19,6 +19,7 @@ from supabase import create_client
 from telebot.types import (
     BotCommand, BotCommandScopeChat, InlineKeyboardButton, InlineKeyboardMarkup,
     KeyboardButton, MenuButtonWebApp, ReplyKeyboardMarkup, WebAppInfo,
+    InlineQueryResultArticle, InlineQueryResultCachedPhoto, InputTextMessageContent,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -36,6 +37,8 @@ bot = telebot.TeleBot(BOT_TOKEN or '0:offline', threaded=False)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024
 user_posts = {}
+# Short-lived, per-user retry receipts; persistent post content remains in Supabase.
+compose_receipts = {}
 session_lock = threading.RLock()
 SESSION_TTL = 3600
 CREATE, CANCEL, DONE = 'Create post', 'Cancel', 'Preview post'
@@ -158,11 +161,12 @@ def api_data():
     try:
         uid = g.user['id']
         posts = supabase.table('posts').select('id,message_text,btn_name,created_at', count='exact').eq('user_id', uid).order('created_at', desc=True).range(page * 12, page * 12 + 11).execute()
-        leaders = supabase.table('users').select('username,total_posts').order('total_posts', desc=True).limit(10).execute()
+        leaders = supabase.table('users').select('id,username,total_posts').gt('total_posts', 0).order('total_posts', desc=True).order('id').limit(100).execute()
         profile = {key: g.user.get(key) for key in ('id', 'first_name', 'last_name', 'username')}
         profile['total_posts'] = posts.count or 0
         return jsonify(profile=profile, posts=[serialize_post(p) for p in posts.data],
-                       leaderboard=[{'name': display_text(u.get('username') or 'Creator'), 'total_posts': u.get('total_posts') or 0} for u in leaders.data],
+                       leaderboard=[{'name': display_text(u.get('username') or 'Creator'), 'total_posts': u.get('total_posts') or 0,
+                                     'is_you': str(u.get('id')) == str(uid)} for u in leaders.data],
                        has_more=(page + 1) * 12 < (posts.count or 0), page=page)
     except Exception:
         logger.warning('Post library query failed', exc_info=False)
@@ -456,6 +460,68 @@ def conversation(message):
             bot.send_message(chat_id, 'Choose an option below to continue this step.', reply_markup=stage_menu(draft))
 
 
+def restore_post(row):
+    """Rebuild original text, Telegram photo and buttons, including legacy rows."""
+    content = unpack_content(row.get('message_text'))
+    def values(raw):
+        try:
+            decoded = json.loads(raw or '[]')
+            return decoded if isinstance(decoded, list) else [decoded]
+        except (TypeError, ValueError):
+            return [raw] if raw else []
+    names, urls = values(row.get('btn_name')), values(row.get('btn_url'))
+    return {'text': content.get('text') or '', 'photo_file_id': content.get('photo_file_id'),
+            'buttons': [{'name': str(name), 'url': normalize_url(str(url))}
+                        for name, url in zip(names, urls) if name and url]}
+
+
+@app.post('/api/posts/<post_id>/send')
+@authenticated
+def send_saved_post(post_id):
+    """Only the owner can reuse a saved post. Sharing never adds to their count."""
+    if DEMO_MODE:
+        return jsonify(error='Demo only. Open the live bot to send a post.'), 403
+    if not supabase:
+        return jsonify(error='Library unavailable. Try again later.'), 503
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or payload.get('action') not in ('share', 'self', 'publish'):
+        return jsonify(error='Choose a send option.'), 400
+    try:
+        rows = supabase.table('posts').select('message_text,btn_name,btn_url').eq('id', post_id).eq('user_id', g.user['id']).limit(1).execute().data
+        if not rows:
+            return jsonify(error='Post not found.'), 404
+        draft = restore_post(rows[0])
+        if payload['action'] == 'share':
+            markup = InlineKeyboardMarkup()
+            for button in draft['buttons']:
+                markup.add(InlineKeyboardButton(button['name'], url=button['url']))
+            markup = markup if draft['buttons'] else None
+            result_id = hashlib.sha256(post_id.encode()).hexdigest()[:32]
+            if draft['photo_file_id']:
+                result = InlineQueryResultCachedPhoto(result_id, draft['photo_file_id'],
+                    caption=draft['text'] or None, parse_mode='HTML', reply_markup=markup)
+            else:
+                result = InlineQueryResultArticle(result_id, 'Saved post',
+                    InputTextMessageContent(draft['text'], parse_mode='HTML'), reply_markup=markup)
+            prepared = bot.save_prepared_inline_message(g.user['id'], result,
+                allow_user_chats=True, allow_bot_chats=False,
+                allow_group_chats=True, allow_channel_chats=True)
+            return jsonify(ok=True, prepared_id=prepared.id)
+        target = g.user['id']
+        if payload['action'] == 'publish':
+            value = str(payload.get('target', '')).strip()
+            if not re.fullmatch(r'@[A-Za-z][A-Za-z0-9_]{3,31}|-?\d+', value):
+                return jsonify(error='Enter a valid @channel or chat ID.'), 400
+            target = can_publish(g.user['id'], int(value) if value.lstrip('-').isdigit() else value)
+        send_post(target, draft)
+        return jsonify(ok=True)
+    except ValueError as error:
+        return jsonify(error=str(error)), 400
+    except Exception:
+        logger.warning('Saved post send failed', exc_info=False)
+        return jsonify(error='Could not send. Check bot access and permissions, or use Send to my bot instead.'), 502
+
+
 @app.post('/api/compose')
 @authenticated
 def compose():
@@ -463,6 +529,12 @@ def compose():
     from types import SimpleNamespace
     if DEMO_MODE:
         return jsonify(error='This is a design preview. Open the live bot to create a real post.'), 403
+    save_only = request.form.get('save_only') == '1'
+    if save_only and not supabase:
+        return jsonify(error='Library unavailable. Your post has not been saved. Try again later.'), 503
+    key = request.headers.get('X-Idempotency-Key', '')
+    if save_only and not re.fullmatch(r'[a-zA-Z0-9-]{16,80}', key):
+        return jsonify(error='Missing save request ID. Reopen the composer.'), 400
     text = request.form.get('text', '').strip()
     photo = request.files.get('photo')
     try:
@@ -488,6 +560,35 @@ def compose():
         return jsonify(error='Check your content, photo size/type, and button labels/URLs. Text limit: 4,096; photo captions: 1,024.'), 400
     with session_lock:
         uid = g.user['id']
+        if save_only:
+            now = time.time()
+            for receipt_key, receipt in list(compose_receipts.items()):
+                if now - receipt['updated'] > SESSION_TTL:
+                    compose_receipts.pop(receipt_key, None)
+            receipt_key = (uid, key)
+            fingerprint = hashlib.sha256(text.encode() + json.dumps(cleaned, sort_keys=True).encode()
+                                         + (photo_buffer.getvalue() if photo_buffer else b'')).hexdigest()
+            receipt = compose_receipts.get(receipt_key)
+            if receipt and receipt['fingerprint'] != fingerprint:
+                return jsonify(error='Content changed. Start a new save request.'), 409
+            if receipt and receipt.get('saved'):
+                return jsonify(ok=True, saved=True)
+            if not receipt:
+                if len(compose_receipts) >= 1000:
+                    return jsonify(error='Studio is busy. Please try again shortly.'), 503
+                draft = {'text': text, 'buttons': cleaned, 'photo_file_id': photo_buffer}
+                try:
+                    sent = send_post(uid, draft)
+                    draft['photo_file_id'] = sent.photo[-1].file_id if photo_buffer else None
+                except Exception:
+                    return jsonify(error='Could not validate your post. Start the bot and check HTML formatting.'), 502
+                receipt = dict(draft, fingerprint=fingerprint, updated=now, saved=False)
+                compose_receipts[receipt_key] = receipt
+            user = SimpleNamespace(id=uid, username=g.user.get('username'), first_name=g.user.get('first_name', 'Creator'))
+            receipt['saved'] = save_to_supabase(user, receipt)
+            if not receipt['saved']:
+                return jsonify(error='Preview is in your bot, but saving failed. Retry Save post to keep it in your library.'), 503
+            return jsonify(ok=True, saved=True)
         if current_draft(uid):
             return jsonify(error='You already have a draft in Telegram. Finish or cancel it before creating another.'), 409
         draft = {'text': text, 'buttons': cleaned, 'photo_file_id': photo_buffer, 'stage': 'publish', 'updated': time.time()}
