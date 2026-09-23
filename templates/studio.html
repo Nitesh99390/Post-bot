@@ -3,79 +3,245 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f8f9fc">
+  <meta name="theme-color" content="#f4f5fa">
   <meta name="description" content="Create a post. Save it. Share anytime.">
   <title>Post Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%237458e8'/%3E%3Cpath d='M9 8h9a6 6 0 0 1 0 12h-3v5H9zm6 5v3h3a1.5 1.5 0 0 0 0-3z' fill='white'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%236c4ee6'/%3E%3Cpath d='M9 8h9a6 6 0 0 1 0 12h-3v5H9zm6 5v3h3a1.5 1.5 0 0 0 0-3z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="{{ url_for('static', filename='studio.css') }}">
   <script src="https://telegram.org/js/telegram-web-app.js" defer></script>
   <script src="{{ url_for('static', filename='studio.js') }}" defer></script>
 </head>
 <body data-demo="{{ 'true' if demo_mode else 'false' }}">
   <a class="skip-link" href="#main-content">Skip to content</a>
-  <header class="view-toolbar" aria-label="Display settings">
-    <span class="view-caption"><span data-layout-caption>Auto layout</span><small data-desktop-hint hidden>Swipe sideways to explore</small></span>
-    <button type="button" class="layout-toggle" data-layout-toggle aria-pressed="false" aria-label="Desktop mode"><i data-icon="monitor"></i><span>Desktop mode</span><span class="layout-state" data-layout-state>Off</span></button>
-  </header>
-  <aside class="sidebar">
-    <a class="brand" href="#overview" aria-label="Post Studio home"><span class="brand-mark">p<span></span></span><span>post<span class="brand-light">studio</span></span></a>
-    <button class="button primary sidebar-create" data-create><i data-icon="plus"></i> New post</button>
-    <nav aria-label="Main navigation">
-      <button class="nav-item active" data-page="overview"><i data-icon="grid"></i><span>Home</span></button>
-      <button class="nav-item" data-page="posts"><i data-icon="layers"></i><span>Saved posts</span><span id="nav-count" class="nav-count">—</span></button>
-      <button class="nav-item" data-page="community"><i data-icon="award"></i><span>Global rank</span></button>
-      <button class="nav-item" data-page="profile"><i data-icon="user"></i><span>Profile</span></button>
-    </nav>
-    <div class="sidebar-bottom"><span class="sidebar-caption"><i data-icon="lock"></i> Your posts stay private.</span></div>
-  </aside>
+
   <div class="app-shell">
-    <main id="main-content" tabindex="-1">
-      <div id="demo-banner" class="demo-banner" hidden><span><i data-icon="sparkles"></i> Demo · Sample posts & rankings</span><button id="dismiss-demo" aria-label="Dismiss demo notice"><i data-icon="close"></i></button></div>
-      <section class="page-heading"><div><h1 id="page-title">Your studio</h1><p id="page-subtitle">Create. Save. Share.</p></div><button class="button primary" data-create><i data-icon="plus"></i><span>New post</span></button></section>
-      <div id="status-panel" class="status-panel" role="status" hidden></div>
-      <div id="overview-page" class="page">
-        <section class="welcome-card">
-          <div class="welcome-content"><span class="pill"><i data-icon="sparkles"></i> MAKE IT YOURS</span><h2>Create now.<br><em>Share anytime.</em></h2><button class="button dark" data-create>Create a post <i data-icon="arrow"></i></button></div>
-          <div class="hero-art" aria-hidden="true"><span class="orbit orbit-one"></span><span class="orbit orbit-two"></span><div class="paper-card back-paper"></div><div class="paper-card front-paper"><div class="art-landscape"><span class="art-sun"></span><span class="mountain m-one"></span><span class="mountain m-two"></span><span class="mountain m-three"></span></div><div class="paper-line"></div><div class="paper-line short"></div><div class="paper-cta"><i data-icon="check-circle"></i> Saved for later</div></div><div class="floating-chip chip-ready"><span class="ready-check"><i data-icon="check"></i></span> Ready to share</div></div>
-        </section>
-        <div class="quick-actions">
-          <button class="quick-card" data-page="posts"><span class="metric-icon lavender"><i data-icon="layers"></i></span><span><strong id="total-posts">—</strong><small>Saved posts</small></span><i data-icon="chevron"></i></button>
-          <button class="quick-card" data-page="community"><span class="metric-icon peach"><i data-icon="award"></i></span><span><strong>Top 100</strong><small>Global rank</small></span><i data-icon="chevron"></i></button>
+    <!-- Desktop / tablet sidebar. Hidden on phones where the bottom bar takes over. -->
+    <aside class="sidebar" aria-label="Sidebar">
+      <a class="brand" href="#overview" aria-label="Post Studio home"><span class="brand-mark">p</span><span class="brand-text">Post<span>Studio</span></span></a>
+      <button class="button primary sidebar-create" data-create><i data-icon="plus"></i><span>New post</span></button>
+      <nav class="side-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-page="overview"><i data-icon="home"></i><span>Home</span></button>
+        <button class="nav-item" data-page="posts"><i data-icon="layers"></i><span>Saved posts</span><span id="nav-count" class="nav-count">—</span></button>
+        <button class="nav-item" data-page="community"><i data-icon="award"></i><span>Global rank</span></button>
+        <button class="nav-item" data-page="profile"><i data-icon="user"></i><span>Profile</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <button class="nav-item" data-help><i data-icon="help"></i><span>How it works</span></button>
+        <button class="nav-item theme-nav" id="theme-toggle" aria-label="Switch to dark mode"><i data-icon="moon"></i><span>Dark mode</span></button>
+        <div class="sidebar-user" data-page="profile" role="button" tabindex="0">
+          <span class="avatar small user-avatar">Y</span>
+          <span class="sidebar-user-text"><strong class="user-name">Your profile</strong><small class="user-handle">Telegram account</small></span>
         </div>
-        <section class="recent-section"><div class="section-heading"><h2>Recently saved <span id="recent-count" class="count-badge">0</span></h2><button class="text-button" data-page="posts">View all <i data-icon="arrow"></i></button></div><div id="recent-posts" class="post-grid" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div></div></section>
       </div>
-      <div id="posts-page" class="page" hidden>
-        <div class="library-toolbar"><div class="filter-tabs" aria-label="Filter posts"><button class="selected" data-filter="all" aria-pressed="true">All</button><button data-filter="photo" aria-pressed="false"><i data-icon="image"></i> Photos</button><button data-filter="text" aria-pressed="false"><i data-icon="text"></i> Text</button></div><button class="icon-button" id="refresh-posts" aria-label="Refresh saved posts"><i data-icon="refresh"></i></button></div>
-        <details class="option-group library-options"><summary><i data-icon="search"></i> Search & sort <i data-icon="chevron-down"></i></summary><div class="library-tools"><label class="search"><i data-icon="search"></i><input id="post-search" type="search" placeholder="Search loaded posts…" aria-label="Search loaded posts"></label><select id="post-sort" aria-label="Sort loaded posts"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select></div></details>
-        <div class="library-meta"><span><i data-icon="lock"></i> Only you</span><span id="result-count" role="status"></span></div><div id="library-posts" class="post-grid library-grid" aria-live="polite"></div><button class="button secondary load-more" id="load-more" hidden>Load more <i data-icon="chevron-down"></i></button>
-      </div>
-      <div id="community-page" class="page" hidden>
-        <section class="leader-intro"><span class="metric-icon lavender"><i data-icon="award"></i></span><div><h2>Top 100 creators</h2><p>All time · Most posts created</p></div><span class="pill">GLOBAL</span></section>
-        <div id="my-rank" class="my-rank" hidden></div>
-        <div class="leaderboard-card"><div class="leader-head"><span>RANK / CREATOR</span><span>POSTS</span></div><div id="leaderboard" aria-live="polite"></div></div>
-        <details class="option-group"><summary>How ranking works <i data-icon="chevron-down"></i></summary><p>Each saved post counts once. Sending it again does not add to your score. Ties are ordered by account ID. Only names and counts are public.</p></details>
-      </div>
-      <div id="profile-page" class="page" hidden>
-        <section class="full-profile"><div class="profile-cover"><span class="profile-cover-orbit"></span></div><div class="profile-body"><div class="avatar extra-large user-avatar">Y</div><span class="creator-badge"><i data-icon="check-circle"></i> Telegram</span><h2 class="user-name">Your profile</h2><p class="user-handle">Your Telegram account</p><div class="profile-details"><div><span>Saved posts</span><strong id="profile-total">—</strong></div><div><span>Global rank</span><strong id="profile-rank">—</strong></div></div></div></section>
-        <div class="profile-menu"><button class="menu-row" data-page="posts"><span class="metric-icon lavender"><i data-icon="layers"></i></span><span>Saved posts</span><i data-icon="chevron"></i></button><button class="menu-row" data-page="community"><span class="metric-icon peach"><i data-icon="award"></i></span><span>Global rank</span><i data-icon="chevron"></i></button></div>
-        <details class="option-group"><summary><i data-icon="user"></i> Account & settings <i data-icon="chevron-down"></i></summary><div class="setting-row"><span>Telegram ID</span><strong id="profile-id">—</strong></div><div class="setting-row"><span>Appearance</span><button class="icon-button" id="theme-toggle" aria-label="Switch to dark mode"><i data-icon="moon"></i></button></div><div class="setting-row"><span>Display layout</span><button type="button" class="layout-toggle" data-layout-toggle aria-pressed="false" aria-label="Desktop mode"><i data-icon="monitor"></i><span>Desktop mode</span><span class="layout-state" data-layout-state>Off</span></button></div><p class="layout-help">Desktop mode keeps the wide layout inside Telegram. On a phone, swipe sideways. Turn it off for automatic sizing. Your choice is remembered on this device.</p><details class="nested-option"><summary>Privacy <i data-icon="chevron-down"></i></summary><p>Only you can open your posts. Photos stay on Telegram. Your name and post count appear in the global ranking.</p></details><button class="text-button" data-help>How to use Post Studio <i data-icon="arrow"></i></button></details>
-      </div>
-    </main>
+    </aside>
+
+    <div class="app-main">
+      <!-- Phone top bar -->
+      <header class="topbar" aria-label="Top bar">
+        <a class="brand compact" href="#overview" aria-label="Post Studio home"><span class="brand-mark">p</span><span class="brand-text">Post<span>Studio</span></span></a>
+        <div class="topbar-actions">
+          <button class="icon-button ghost" id="theme-toggle-mobile" aria-label="Switch to dark mode"><i data-icon="moon"></i></button>
+          <button class="avatar-button" data-page="profile" aria-label="Open profile"><span class="avatar small user-avatar">Y</span></button>
+        </div>
+      </header>
+
+      <main id="main-content" tabindex="-1">
+        <div id="demo-banner" class="demo-banner" hidden><span><i data-icon="sparkles"></i> Demo mode · Sample posts &amp; rankings</span><button id="dismiss-demo" aria-label="Dismiss demo notice"><i data-icon="close"></i></button></div>
+
+        <section class="page-heading">
+          <div><p class="eyebrow user-greeting" id="greeting">Welcome back</p><h1 id="page-title">Your studio</h1><p id="page-subtitle">Create. Save. Share.</p></div>
+          <button class="button primary heading-create" data-create><i data-icon="plus"></i><span>New post</span></button>
+        </section>
+
+        <div id="status-panel" class="status-panel" role="status" hidden></div>
+
+        <!-- HOME -->
+        <div id="overview-page" class="page">
+          <section class="hero-card">
+            <div class="hero-content">
+              <span class="pill light"><i data-icon="sparkles"></i> Make it yours</span>
+              <h2>Create now.<br>Share anytime.</h2>
+              <p>Write once, keep it private, and send it to any chat or channel whenever you like.</p>
+              <button class="button white" data-create>Create a post <i data-icon="arrow"></i></button>
+            </div>
+            <div class="hero-art" aria-hidden="true">
+              <span class="ring ring-a"></span><span class="ring ring-b"></span>
+              <div class="mini-post back"></div>
+              <div class="mini-post front">
+                <div class="mini-photo"><span class="mini-sun"></span><span class="mini-hill a"></span><span class="mini-hill b"></span></div>
+                <span class="mini-line"></span><span class="mini-line short"></span>
+                <span class="mini-btn">Open link</span>
+              </div>
+              <span class="hero-chip"><i data-icon="check"></i> Saved</span>
+            </div>
+          </section>
+
+          <div class="stat-row">
+            <button class="stat-card" data-page="posts"><span class="stat-icon brand"><i data-icon="layers"></i></span><span class="stat-text"><strong id="total-posts">—</strong><small>Saved posts</small></span><i data-icon="chevron"></i></button>
+            <button class="stat-card" data-page="community"><span class="stat-icon gold"><i data-icon="award"></i></span><span class="stat-text"><strong id="home-rank">—</strong><small>Global rank</small></span><i data-icon="chevron"></i></button>
+          </div>
+
+          <section class="section">
+            <div class="section-heading"><h2>Recently saved <span id="recent-count" class="count-badge">0</span></h2><button class="text-button" data-page="posts">View all <i data-icon="arrow"></i></button></div>
+            <div id="recent-posts" class="post-grid" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div></div>
+          </section>
+
+          <section class="section">
+            <div class="section-heading"><h2>How it works</h2><button class="text-button" data-help>Details <i data-icon="arrow"></i></button></div>
+            <div class="steps-row">
+              <div class="step-card"><span class="step-num">1</span><strong>Create</strong><small>Text, photo, buttons.</small></div>
+              <div class="step-card"><span class="step-num">2</span><strong>Save</strong><small>Kept in your library.</small></div>
+              <div class="step-card"><span class="step-num">3</span><strong>Share</strong><small>Any chat, any time.</small></div>
+            </div>
+          </section>
+        </div>
+
+        <!-- SAVED -->
+        <div id="posts-page" class="page" hidden>
+          <div class="library-toolbar">
+            <label class="search"><i data-icon="search"></i><input id="post-search" type="search" placeholder="Search your posts" aria-label="Search loaded posts"></label>
+            <button class="icon-button" id="refresh-posts" aria-label="Refresh saved posts"><i data-icon="refresh"></i></button>
+          </div>
+          <div class="library-filters">
+            <div class="filter-tabs" aria-label="Filter posts"><button class="selected" data-filter="all" aria-pressed="true">All</button><button data-filter="photo" aria-pressed="false"><i data-icon="image"></i> Photos</button><button data-filter="text" aria-pressed="false"><i data-icon="text"></i> Text</button></div>
+            <select id="post-sort" aria-label="Sort loaded posts"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+          </div>
+          <div class="library-meta"><span><i data-icon="lock"></i> Only you can see these</span><span id="result-count" role="status"></span></div>
+          <div id="library-posts" class="post-grid library-grid" aria-live="polite"></div>
+          <button class="button secondary load-more" id="load-more" hidden>Load more <i data-icon="chevron-down"></i></button>
+        </div>
+
+        <!-- RANK -->
+        <div id="community-page" class="page" hidden>
+          <section class="rank-hero">
+            <span class="stat-icon gold big"><i data-icon="award"></i></span>
+            <div><h2>Top 100 creators</h2><p>All time · Most posts created</p></div>
+            <span class="pill">Global</span>
+          </section>
+          <div id="my-rank" class="my-rank" hidden></div>
+          <div id="podium" class="podium" hidden></div>
+          <div class="card leaderboard-card">
+            <div class="leader-head"><span>Rank / Creator</span><span>Posts</span></div>
+            <div id="leaderboard" aria-live="polite"></div>
+          </div>
+          <details class="option-group"><summary><i data-icon="help"></i> How ranking works <i data-icon="chevron-down"></i></summary><p>Each saved post counts once. Sending it again does not add to your score. Ties are ordered by account ID. Only names and counts are public.</p></details>
+        </div>
+
+        <!-- PROFILE -->
+        <div id="profile-page" class="page" hidden>
+          <section class="card profile-card">
+            <div class="profile-cover"><span class="ring ring-a"></span><span class="ring ring-b"></span></div>
+            <div class="profile-body">
+              <div class="avatar extra-large user-avatar">Y</div>
+              <span class="creator-badge"><i data-icon="check-circle"></i> Telegram</span>
+              <h2 class="user-name">Your profile</h2>
+              <p class="user-handle">Your Telegram account</p>
+              <div class="profile-stats">
+                <div><span>Saved posts</span><strong id="profile-total">—</strong></div>
+                <div><span>Global rank</span><strong id="profile-rank">—</strong></div>
+              </div>
+            </div>
+          </section>
+
+          <div class="card list-card">
+            <button class="menu-row" data-page="posts"><span class="stat-icon brand"><i data-icon="layers"></i></span><span>Saved posts</span><i data-icon="chevron"></i></button>
+            <button class="menu-row" data-page="community"><span class="stat-icon gold"><i data-icon="award"></i></span><span>Global rank</span><i data-icon="chevron"></i></button>
+            <button class="menu-row" data-help><span class="stat-icon mint"><i data-icon="help"></i></span><span>How to use Post Studio</span><i data-icon="chevron"></i></button>
+          </div>
+
+          <h3 class="group-label">Settings</h3>
+          <div class="card list-card settings-card">
+            <div class="setting-row">
+              <span class="setting-label"><i data-icon="sun"></i> Appearance</span>
+              <div class="segmented" role="group" aria-label="Appearance">
+                <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+                <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+                <button type="button" data-theme-choice="system" aria-pressed="false">Auto</button>
+              </div>
+            </div>
+            <div class="setting-row"><span class="setting-label"><i data-icon="user"></i> Telegram ID</span><strong id="profile-id" class="mono">—</strong></div>
+            <details class="setting-details"><summary><span class="setting-label"><i data-icon="shield"></i> Privacy</span><i data-icon="chevron-down"></i></summary><p>Only you can open your posts. Photos stay on Telegram. Your name and post count appear in the global ranking.</p></details>
+          </div>
+          <p class="footer-note">Post Studio · Built for Telegram</p>
+        </div>
+      </main>
+    </div>
   </div>
-  <nav class="mobile-nav" aria-label="Mobile navigation"><button class="active" data-page="overview"><i data-icon="grid"></i><span>Home</span></button><button data-page="posts"><i data-icon="layers"></i><span>Saved</span></button><button data-page="community"><i data-icon="award"></i><span>Rank</span></button><button data-page="profile"><span class="avatar nav-avatar user-avatar">Y</span><span>Profile</span></button></nav>
+
+  <!-- Phone bottom navigation with a centre create action -->
+  <nav class="tabbar" aria-label="Mobile navigation">
+    <button class="tab active" data-page="overview"><i data-icon="home"></i><span>Home</span></button>
+    <button class="tab" data-page="posts"><i data-icon="layers"></i><span>Saved</span></button>
+    <button class="tab-create" data-create aria-label="New post"><span><i data-icon="plus"></i></span></button>
+    <button class="tab" data-page="community"><i data-icon="award"></i><span>Rank</span></button>
+    <button class="tab" data-page="profile"><i data-icon="user"></i><span>Profile</span></button>
+  </nav>
+
+  <!-- Composer -->
   <dialog id="composer" class="modal composer-modal" aria-labelledby="composer-title">
-    <div class="modal-heading"><h2 id="composer-title">New post</h2><button class="icon-button" data-close="composer" aria-label="Close composer"><i data-icon="close"></i></button></div>
+    <span class="sheet-handle" aria-hidden="true"></span>
+    <div class="modal-heading"><div><h2 id="composer-title">New post</h2><p class="modal-sub">Saved privately. Share whenever you like.</p></div><button class="icon-button" data-close="composer" aria-label="Close composer"><i data-icon="close"></i></button></div>
     <form id="compose-form">
-      <label class="field-label" for="post-text">Your post</label><div class="editor-box"><div class="format-toolbar" aria-label="Text formatting"><button type="button" data-format="b" aria-label="Bold text"><b>B</b></button><button type="button" data-format="i" aria-label="Italic text"><em>I</em></button><button type="button" data-format="u" aria-label="Underline text"><u>U</u></button><button type="button" data-format="code" aria-label="Code text"><i data-icon="code"></i></button></div><textarea id="post-text" name="text" rows="5" maxlength="4096" placeholder="What would you like to share?" aria-describedby="char-count"></textarea></div><div class="field-hint"><span id="char-count">0 / 4,096</span></div>
-      <details class="option-group" id="photo-options"><summary><i data-icon="image"></i> Add photo <i data-icon="chevron-down"></i></summary><label class="upload-zone" id="upload-zone"><input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" aria-label="Upload a post photo"><i data-icon="image-plus"></i><strong>Choose a photo</strong><span>JPG, PNG, WebP · Up to 9 MB</span></label><div id="photo-preview" class="photo-preview" hidden><img id="selected-photo" alt="Your selected photo"><button class="icon-button" id="remove-photo" type="button" aria-label="Remove photo"><i data-icon="close"></i></button></div></details>
-      <details class="option-group" id="button-options"><summary><i data-icon="plus"></i> Add buttons <i data-icon="chevron-down"></i></summary><div id="button-fields"></div><button class="text-button" id="add-button" type="button"><i data-icon="plus"></i> Add button <span class="muted">· up to 10</span></button></details>
-      <details class="option-group"><summary><i data-icon="send"></i> Preview <i data-icon="chevron-down"></i></summary><div class="telegram-preview"><img id="live-photo" alt="Photo preview" hidden><div id="live-text" class="live-text"></div></div><div id="live-buttons"></div></details>
-      <p class="save-hint"><i data-icon="lock"></i> Saves to your library. A copy goes to your bot.</p>
-      <p id="compose-error" class="form-error" role="alert" hidden></p><div class="modal-footer"><button class="button secondary" type="button" data-close="composer">Cancel</button><button class="button primary" type="submit" id="submit-post">Save post <i data-icon="check"></i></button></div>
+      <div class="editor-box">
+        <div class="format-toolbar" aria-label="Text formatting">
+          <button type="button" data-format="b" aria-label="Bold text"><b>B</b></button>
+          <button type="button" data-format="i" aria-label="Italic text"><em>I</em></button>
+          <button type="button" data-format="u" aria-label="Underline text"><u>U</u></button>
+          <button type="button" data-format="code" aria-label="Code text"><i data-icon="code"></i></button>
+          <span id="char-count" class="char-count">0 / 4,096</span>
+        </div>
+        <textarea id="post-text" name="text" rows="5" maxlength="4096" placeholder="What would you like to share?" aria-describedby="char-count"></textarea>
+      </div>
+
+      <details class="option-group" id="photo-options"><summary><span class="stat-icon brand sm"><i data-icon="image"></i></span><span class="summary-text"><strong>Add photo</strong><small>Optional · JPG, PNG, WebP</small></span><i data-icon="chevron-down"></i></summary>
+        <label class="upload-zone" id="upload-zone"><input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" aria-label="Upload a post photo"><i data-icon="image-plus"></i><strong>Choose a photo</strong><span>Up to 9 MB</span></label>
+        <div id="photo-preview" class="photo-preview" hidden><img id="selected-photo" alt="Your selected photo"><button class="icon-button" id="remove-photo" type="button" aria-label="Remove photo"><i data-icon="close"></i></button></div>
+      </details>
+
+      <details class="option-group" id="button-options"><summary><span class="stat-icon mint sm"><i data-icon="link"></i></span><span class="summary-text"><strong>Add buttons</strong><small>Optional · Up to 10 links</small></span><i data-icon="chevron-down"></i></summary>
+        <div id="button-fields"></div>
+        <button class="text-button" id="add-button" type="button"><i data-icon="plus"></i> Add button</button>
+      </details>
+
+      <details class="option-group" open><summary><span class="stat-icon gold sm"><i data-icon="eye"></i></span><span class="summary-text"><strong>Preview</strong><small>How it looks in Telegram</small></span><i data-icon="chevron-down"></i></summary>
+        <div class="telegram-preview"><img id="live-photo" alt="Photo preview" hidden><div id="live-text" class="live-text"></div></div>
+        <div id="live-buttons" class="live-buttons"></div>
+      </details>
+
+      <p id="compose-error" class="form-error" role="alert" hidden></p>
+      <div class="modal-footer"><button class="button secondary" type="button" data-close="composer">Cancel</button><button class="button primary" type="submit" id="submit-post">Save post <i data-icon="check"></i></button></div>
     </form>
   </dialog>
-  <dialog id="detail" class="modal detail-modal" aria-labelledby="detail-title"><div class="modal-heading"><h2 id="detail-title">Saved post</h2><button class="icon-button" data-close="detail" aria-label="Close post"><i data-icon="close"></i></button></div><div id="detail-content"></div><details class="option-group" id="send-options"><summary><i data-icon="send"></i> Send post <i data-icon="chevron-down"></i></summary><button class="menu-row" id="share-post"><i data-icon="send"></i><span>Choose a Telegram chat</span><i data-icon="chevron"></i></button><button class="menu-row" id="send-self"><i data-icon="user"></i><span>Send to my bot</span><i data-icon="chevron"></i></button><details class="nested-option"><summary>Post to my channel <i data-icon="chevron-down"></i></summary><form id="send-form"><label class="field-label" for="send-target">Channel / group you manage</label><input id="send-target" placeholder="@channel or chat ID" maxlength="64" required><p class="save-hint">You and the bot need posting permission.</p><button class="button primary" type="submit">Send to channel <i data-icon="send"></i></button></form></details><p id="send-status" class="save-hint" role="status"></p><p id="send-error" class="form-error" role="alert" hidden></p></details><div class="modal-footer"><button class="button secondary" id="copy-post"><i data-icon="copy"></i> Copy text</button><button class="button primary" id="show-send"><i data-icon="send"></i> Send post</button></div></dialog>
-  <dialog id="help" class="modal help-modal" aria-labelledby="help-title"><div class="modal-heading"><h2 id="help-title">Three simple steps</h2><button class="icon-button" data-close="help" aria-label="Close help"><i data-icon="close"></i></button></div><div class="help-step"><b>01</b><div><h3>Create</h3><p>Write a post. Photo and buttons are optional.</p></div></div><div class="help-step"><b>02</b><div><h3>Save</h3><p>Tap Save post to keep it in your private library.</p></div></div><div class="help-step"><b>03</b><div><h3>Share anytime</h3><p>Open Saved, select a post and choose Send post.</p></div></div></dialog>
+
+  <!-- Post detail -->
+  <dialog id="detail" class="modal detail-modal" aria-labelledby="detail-title">
+    <span class="sheet-handle" aria-hidden="true"></span>
+    <div class="modal-heading"><div><h2 id="detail-title">Saved post</h2><p class="modal-sub">Private · Only you can open this</p></div><button class="icon-button" data-close="detail" aria-label="Close post"><i data-icon="close"></i></button></div>
+    <div id="detail-content"></div>
+    <details class="option-group" id="send-options"><summary><span class="stat-icon brand sm"><i data-icon="send"></i></span><span class="summary-text"><strong>Send post</strong><small>Choose a destination</small></span><i data-icon="chevron-down"></i></summary>
+      <button class="menu-row" id="share-post"><span class="stat-icon brand sm"><i data-icon="send"></i></span><span>Choose a Telegram chat</span><i data-icon="chevron"></i></button>
+      <button class="menu-row" id="send-self"><span class="stat-icon mint sm"><i data-icon="user"></i></span><span>Send to my bot</span><i data-icon="chevron"></i></button>
+      <details class="nested-option"><summary>Post to my channel <i data-icon="chevron-down"></i></summary>
+        <form id="send-form"><label class="field-label" for="send-target">Channel / group you manage</label><input id="send-target" placeholder="@channel or chat ID" maxlength="64" required><p class="save-hint">You and the bot need posting permission.</p><button class="button primary" type="submit">Send to channel <i data-icon="send"></i></button></form>
+      </details>
+      <p id="send-status" class="save-hint" role="status"></p>
+      <p id="send-error" class="form-error" role="alert" hidden></p>
+    </details>
+    <div class="modal-footer"><button class="button secondary" id="copy-post"><i data-icon="copy"></i> Copy text</button><button class="button primary" id="show-send"><i data-icon="send"></i> Send post</button></div>
+  </dialog>
+
+  <!-- Help -->
+  <dialog id="help" class="modal help-modal" aria-labelledby="help-title">
+    <span class="sheet-handle" aria-hidden="true"></span>
+    <div class="modal-heading"><div><h2 id="help-title">Three simple steps</h2><p class="modal-sub">Everything you need to know</p></div><button class="icon-button" data-close="help" aria-label="Close help"><i data-icon="close"></i></button></div>
+    <div class="help-step"><b>01</b><div><h3>Create</h3><p>Write a post. Photo and buttons are optional.</p></div></div>
+    <div class="help-step"><b>02</b><div><h3>Save</h3><p>Tap Save post to keep it in your private library.</p></div></div>
+    <div class="help-step"><b>03</b><div><h3>Share anytime</h3><p>Open Saved, select a post and choose Send post.</p></div></div>
+    <div class="modal-footer"><button class="button primary" data-close="help">Got it</button></div>
+  </dialog>
+
   <div id="toast" class="toast" role="status" hidden></div>
   <noscript><div class="status-panel">Enable JavaScript or create posts in your Telegram bot.</div></noscript>
 </body>
