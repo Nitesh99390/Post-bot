@@ -213,6 +213,144 @@ $('#compose-form').addEventListener('submit',async event=>{
   }catch(error){showComposeError(error.message);}
   finally{state.busy=false;$('#submit-post').disabled=false;$('#submit-post').innerHTML='Send preview to Telegram '+icon('send');}
 });
+// Build preview nodes with a strict formatting allowlist; never inject user HTML.
+function updatePreview() {
+  const root = $('#live-text');
+  root.replaceChildren();
+  const text = $('#post-text').value;
+  if (!text.trim()) {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'preview-placeholder';
+    placeholder.textContent = 'Your next great idea goes here…';
+    root.append(placeholder);
+  } else {
+    const parsed = new DOMParser().parseFromString(text, 'text/html');
+    const allowed = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'S', 'DEL', 'CODE', 'PRE', 'BLOCKQUOTE']);
+    function appendSafe(source, target, depth = 0) {
+      if (depth > 40) { target.append(document.createTextNode(source.textContent)); return; }
+      for (const node of source.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) target.append(document.createTextNode(node.textContent));
+        else if (node.nodeType === Node.ELEMENT_NODE) {
+          if (node.tagName === 'BR') { target.append(document.createElement('br')); continue; }
+          if (allowed.has(node.tagName)) {
+            const element = document.createElement(node.tagName.toLowerCase());
+            appendSafe(node, element, depth + 1);
+            target.append(element);
+          } else appendSafe(node, target, depth + 1);
+        }
+      }
+    }
+    appendSafe(parsed.body, root);
+  }
+  $('#live-photo').hidden = !state.photoURL;
+  if (state.photoURL) $('#live-photo').src = state.photoURL;
+  else $('#live-photo').removeAttribute('src');
+  $('#live-buttons').replaceChildren();
+  $$('.button-row').forEach(row => {
+    const label = document.createElement('div');
+    label.textContent = $('input', row).value.trim() || 'Your button label';
+    $('#live-buttons').append(label);
+  });
+}
+
+// Preferences are the only data persisted in the browser. Drafts and links are not.
+function setTheme(theme) {
+  const dark = theme === 'dark';
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  $('#theme-toggle').innerHTML = icon(dark ? 'sun' : 'moon');
+  $('#theme-toggle').setAttribute('aria-label', `Switch to ${dark ? 'light' : 'dark'} mode`);
+  $('meta[name="theme-color"]').content = dark ? '#15151e' : '#f8f9fc';
+  try { localStorage.setItem('poststudio-theme', theme); } catch (_) { /* Private browsing may block storage. */ }
+  try { if(tg?.isVersionAtLeast?.('6.1')) { tg.setHeaderColor(dark ? '#15151e' : '#f8f9fc'); tg.setBackgroundColor(dark ? '#15151e' : '#f8f9fc'); } } catch (_) { /* Older clients retain their theme. */ }
+}
+let savedTheme;
+try { savedTheme = localStorage.getItem('poststudio-theme'); } catch (_) { /* Use the system default. */ }
+setTheme(savedTheme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+$('#theme-toggle').addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+  haptic();
+});
+
+const creatorTips = [
+  ['Make your first line count.', 'A good hook starts a conversation. Keep it short, make it yours, and let your photo do the rest.'],
+  ['Give every button a purpose.', 'One clear next step is better than ten distractions. Tell your audience exactly what they’ll find.'],
+  ['A little breathing room helps.', 'Break up long thoughts. A short paragraph and a little white space can make your story easier to follow.'],
+];
+$$('[data-tip]').forEach(button => button.addEventListener('click', () => {
+  const [title, description] = creatorTips[Number(button.dataset.tip)];
+  $('#tip-title').textContent = title;
+  $('#tip-description').textContent = description;
+  $$('[data-tip]').forEach(item => {
+    item.classList.toggle('selected', item === button);
+    item.setAttribute('aria-pressed', String(item === button));
+  });
+}));
+
+$('#compose-form').addEventListener('input', () => { state.submissionKey = null; updatePreview(); });
+$('#compose-form').addEventListener('change', () => { state.submissionKey = null; });
+$$('[data-format]').forEach(button => button.addEventListener('click', () => {
+  const input = $('#post-text');
+  const { selectionStart: start, selectionEnd: end } = input;
+  const tag = button.dataset.format;
+  const selection = input.value.slice(start, end) || 'your text';
+  const replacement = `<${tag}>${selection}</${tag}>`;
+  if (input.value.length - (end - start) + replacement.length > input.maxLength) {
+    showComposeError('There is not enough space to add formatting. Shorten your message first.');
+    return;
+  }
+  input.setRangeText(replacement, start, end, 'select');
+  input.focus();
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  countText();
+}));
+
+// Support drag-and-drop without allowing the browser to navigate to a local file.
+const uploadZone = $('#upload-zone');
+['dragenter', 'dragover'].forEach(name => uploadZone.addEventListener(name, event => {
+  event.preventDefault();
+  uploadZone.classList.add('dragging');
+}));
+['dragleave', 'drop'].forEach(name => uploadZone.addEventListener(name, event => {
+  event.preventDefault();
+  uploadZone.classList.remove('dragging');
+}));
+uploadZone.addEventListener('drop', event => {
+  if (state.busy) return;
+  const file = event.dataTransfer.files[0];
+  if (!file) return;
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  $('#photo-input').files = transfer.files;
+  $('#photo-input').dispatchEvent(new Event('change', { bubbles: true }));
+});
+
+$('#copy-post').addEventListener('click', async () => {
+  if (!state.selectedPost) return;
+  const button = $('#copy-post');
+  try {
+    await navigator.clipboard.writeText(state.selectedPost.text);
+    button.innerHTML = icon('check') + ' Copied!';
+    setTimeout(() => { button.innerHTML = icon('copy') + ' Copy displayed text'; }, 2000);
+  } catch (_) {
+    button.textContent = 'Select the text above to copy it';
+  }
+});
+
+document.addEventListener('keydown', event => {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.repeat || event.isComposing) return;
+  if (event.target.closest('input, textarea, select, [contenteditable="true"]') || $('dialog[open]')) return;
+  if (event.key.toLowerCase() === 'n') { event.preventDefault(); openComposer(); }
+  if (event.key === '/') { event.preventDefault(); navigate('posts'); $('#post-search').focus(); }
+});
+window.addEventListener('beforeunload', event => {
+  if ($('#post-text').value.trim() || $('#photo-input').files.length || state.busy) {
+    event.preventDefault();
+    event.returnValue = '';
+  }
+});
+window.addEventListener('offline', () => toast('You’re offline. Your current draft is still here.'));
+window.addEventListener('online', () => toast('You’re back online. Ready when you are.'));
+
 function loadDemo(){
   $('#demo-banner').hidden=false;$('#connection').innerHTML='<span class="status-dot"></span> Design preview';
   state.profile={id:123456789,first_name:'Alex',last_name:'Morgan',username:'alexcreates',total_posts:4};
