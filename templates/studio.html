@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f4f5fa">
-  <meta name="description" content="Create a post. Save it. Share anytime.">
-  <title>Post Studio</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='10' fill='%236c4ee6'/%3E%3Cpath d='M9 8h9a6 6 0 0 1 0 12h-3v5H9zm6 5v3h3a1.5 1.5 0 0 0 0-3z' fill='white'/%3E%3C/svg%3E">
+  <meta name="description" content="Create colorful, interactive posts with smart multi-button rows. Save privately & share anytime.">
+  <title>Post Studio · Pro Mobile</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%236c4ee6'/%3E%3Cstop offset='100%25' stop-color='%23ec4899'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='10' fill='url(%23g)'/%3E%3Cpath d='M9 8h9a6 6 0 0 1 0 12h-3v5H9zm6 5v3h3a1.5 1.5 0 0 0 0-3z' fill='white'/%3E%3C/svg%3E">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="{{ url_for('static', filename='studio.css') }}">
@@ -19,20 +19,56 @@
   <div class="app-shell">
     <!-- Desktop / tablet sidebar. Hidden on phones where the bottom bar takes over. -->
     <aside class="sidebar" aria-label="Sidebar">
-      <a class="brand" href="#overview" aria-label="Post Studio home"><span class="brand-mark">p</span><span class="brand-text">Post<span>Studio</span></span></a>
-      <button class="button primary sidebar-create" data-create><i data-icon="plus"></i><span>New post</span></button>
+      <a class="brand" href="#overview" aria-label="Post Studio home">
+        <span class="brand-mark">p</span>
+        <span class="brand-text">Post<span>Studio</span> <em class="pro-pill">PRO</em></span>
+      </a>
+
+      <button class="button primary colorful-cta sidebar-create" data-create>
+        <span class="btn-icon-box"><i data-icon="plus"></i></span>
+        <span class="btn-main-label">New post</span>
+        <span class="btn-inner-pill"><i data-icon="sparkles"></i> Instant</span>
+      </button>
+
       <nav class="side-nav" aria-label="Main navigation">
-        <button class="nav-item active" data-page="overview"><i data-icon="home"></i><span>Home</span></button>
-        <button class="nav-item" data-page="posts"><i data-icon="layers"></i><span>Saved posts</span><span id="nav-count" class="nav-count">—</span></button>
-        <button class="nav-item" data-page="community"><i data-icon="award"></i><span>Global rank</span></button>
-        <button class="nav-item" data-page="profile"><i data-icon="user"></i><span>Profile</span></button>
+        <button class="nav-item active" data-page="overview">
+          <span class="nav-icon-wrap violet"><i data-icon="home"></i></span>
+          <span>Home</span>
+          <span class="nav-inner-tag">Studio</span>
+        </button>
+        <button class="nav-item" data-page="posts">
+          <span class="nav-icon-wrap emerald"><i data-icon="layers"></i></span>
+          <span>Saved posts</span>
+          <span id="nav-count" class="nav-count">—</span>
+        </button>
+        <button class="nav-item" data-page="community">
+          <span class="nav-icon-wrap amber"><i data-icon="award"></i></span>
+          <span>Global rank</span>
+          <span class="nav-inner-tag gold">Top 100</span>
+        </button>
+        <button class="nav-item" data-page="profile">
+          <span class="nav-icon-wrap rose"><i data-icon="user"></i></span>
+          <span>Profile</span>
+        </button>
       </nav>
+
       <div class="sidebar-bottom">
-        <button class="nav-item" data-help><i data-icon="help"></i><span>How it works</span></button>
-        <button class="nav-item theme-nav" id="theme-toggle" aria-label="Switch to dark mode"><i data-icon="moon"></i><span>Dark mode</span></button>
+        <button class="nav-item" data-help>
+          <span class="nav-icon-wrap ocean"><i data-icon="help"></i></span>
+          <span>How it works</span>
+          <span class="nav-inner-tag">3 steps</span>
+        </button>
+        <button class="nav-item theme-nav" id="theme-toggle" aria-label="Switch to dark mode">
+          <span class="nav-icon-wrap sunset"><i data-icon="moon"></i></span>
+          <span class="theme-text">Dark mode</span>
+        </button>
         <div class="sidebar-user" data-page="profile" role="button" tabindex="0">
           <span class="avatar small user-avatar">Y</span>
-          <span class="sidebar-user-text"><strong class="user-name">Your profile</strong><small class="user-handle">Telegram account</small></span>
+          <span class="sidebar-user-text">
+            <strong class="user-name">Your profile</strong>
+            <small class="user-handle">Telegram account</small>
+          </span>
+          <span class="inner-mini-pill"><i data-icon="chevron"></i></span>
         </div>
       </div>
     </aside>
@@ -40,19 +76,40 @@
     <div class="app-main">
       <!-- Phone top bar -->
       <header class="topbar" aria-label="Top bar">
-        <a class="brand compact" href="#overview" aria-label="Post Studio home"><span class="brand-mark">p</span><span class="brand-text">Post<span>Studio</span></span></a>
+        <a class="brand compact" href="#overview" aria-label="Post Studio home">
+          <span class="brand-mark">p</span>
+          <span class="brand-text">Post<span>Studio</span> <em class="pro-pill">PRO</em></span>
+        </a>
         <div class="topbar-actions">
+          <button class="top-quick-create" data-create aria-label="Quick create post">
+            <i data-icon="plus"></i>
+            <span>Create</span>
+            <b class="inner-badge-dot">FAST</b>
+          </button>
           <button class="icon-button ghost" id="theme-toggle-mobile" aria-label="Switch to dark mode"><i data-icon="moon"></i></button>
           <button class="avatar-button" data-page="profile" aria-label="Open profile"><span class="avatar small user-avatar">Y</span></button>
         </div>
       </header>
 
       <main id="main-content" tabindex="-1">
-        <div id="demo-banner" class="demo-banner" hidden><span><i data-icon="sparkles"></i> Demo mode · Sample posts &amp; rankings</span><button id="dismiss-demo" aria-label="Dismiss demo notice"><i data-icon="close"></i></button></div>
+        <div id="demo-banner" class="demo-banner" hidden>
+          <span><i data-icon="sparkles"></i> <strong>Interactive Preview Mode</strong> · Test colorful buttons, presets &amp; layouts</span>
+          <button id="dismiss-demo" aria-label="Dismiss demo notice"><i data-icon="close"></i></button>
+        </div>
 
         <section class="page-heading">
-          <div><p class="eyebrow user-greeting" id="greeting">Welcome back</p><h1 id="page-title">Your studio</h1><p id="page-subtitle">Create. Save. Share.</p></div>
-          <button class="button primary heading-create" data-create><i data-icon="plus"></i><span>New post</span></button>
+          <div>
+            <p class="eyebrow user-greeting" id="greeting">Welcome back</p>
+            <h1 id="page-title">Your studio</h1>
+            <p id="page-subtitle">Create. Save. Share.</p>
+          </div>
+          <div class="heading-actions">
+            <button class="button primary colorful-cta heading-create" data-create>
+              <span class="btn-icon-box"><i data-icon="plus"></i></span>
+              <span>New post</span>
+              <span class="btn-inner-pill">+ Buttons</span>
+            </button>
+          </div>
         </section>
 
         <div id="status-panel" class="status-panel" role="status" hidden></div>
@@ -61,10 +118,21 @@
         <div id="overview-page" class="page">
           <section class="hero-card">
             <div class="hero-content">
-              <span class="pill light"><i data-icon="sparkles"></i> Make it yours</span>
-              <h2>Create now.<br>Share anytime.</h2>
-              <p>Write once, keep it private, and send it to any chat or channel whenever you like.</p>
-              <button class="button white" data-create>Create a post <i data-icon="arrow"></i></button>
+              <span class="pill light"><i data-icon="sparkles"></i> All-in-one Mobile Studio</span>
+              <h2>Create once.<br>Share with power.</h2>
+              <p>Craft rich posts, attach smart multi-button rows (1, 2, or 3 buttons side-by-side), and share to any chat in one tap.</p>
+              <div class="hero-btn-group">
+                <button class="button white hero-main-btn" data-create>
+                  <span class="btn-icon-box violet"><i data-icon="plus"></i></span>
+                  <span>Create Post</span>
+                  <span class="btn-inner-chip">1-Tap Studio <i data-icon="arrow"></i></span>
+                </button>
+                <button class="button glass-btn" data-create-preset="social">
+                  <i data-icon="layers"></i>
+                  <span>With Button Pack</span>
+                  <span class="btn-inner-chip light">+3 Links</span>
+                </button>
+              </div>
             </div>
             <div class="hero-art" aria-hidden="true">
               <span class="ring ring-a"></span><span class="ring ring-b"></span>
@@ -72,28 +140,149 @@
               <div class="mini-post front">
                 <div class="mini-photo"><span class="mini-sun"></span><span class="mini-hill a"></span><span class="mini-hill b"></span></div>
                 <span class="mini-line"></span><span class="mini-line short"></span>
-                <span class="mini-btn">Open link</span>
+                <div class="mini-btn-stack">
+                  <span class="mini-btn gradient-btn"><span>Explore Now</span> <em>HOT</em></span>
+                  <div class="mini-btn-split">
+                    <span class="mini-btn emerald">Join</span>
+                    <span class="mini-btn amber">Share</span>
+                  </div>
+                </div>
               </div>
-              <span class="hero-chip"><i data-icon="check"></i> Saved</span>
+              <span class="hero-chip"><i data-icon="check"></i> Smart Buttons</span>
+            </div>
+          </section>
+
+          <!-- ONE-TAP QUICK ACTION DOCK (Button inside Button architecture) -->
+          <section class="quick-dock-section" aria-label="One-tap quick launch">
+            <div class="section-heading compact">
+              <h2><i data-icon="zap"></i> Instant Launchpad <span class="count-badge">All-in-One</span></h2>
+              <span class="section-sub-hint">Pick exactly the buttons &amp; features you need</span>
+            </div>
+            <div class="quick-action-grid">
+              <button class="smart-action-btn tone-violet" data-create-mode="text">
+                <div class="smart-btn-top">
+                  <span class="smart-icon"><i data-icon="text"></i></span>
+                  <span class="inner-sub-btn"><i data-icon="plus"></i> Open</span>
+                </div>
+                <div class="smart-btn-body">
+                  <strong>Text + CTA Post</strong>
+                  <small>Rich HTML + smart button</small>
+                </div>
+                <div class="smart-btn-footer">
+                  <span class="nested-chip">4,096 chars</span>
+                  <span class="nested-chip accent">1–24 btns</span>
+                </div>
+              </button>
+
+              <button class="smart-action-btn tone-rose" data-create-mode="photo">
+                <div class="smart-btn-top">
+                  <span class="smart-icon"><i data-icon="image-plus"></i></span>
+                  <span class="inner-sub-btn"><i data-icon="upload"></i> Photo</span>
+                </div>
+                <div class="smart-btn-body">
+                  <strong>Photo Showcase</strong>
+                  <small>HD Media + caption links</small>
+                </div>
+                <div class="smart-btn-footer">
+                  <span class="nested-chip">JPG / WebP</span>
+                  <span class="nested-chip accent">Auto-Preview</span>
+                </div>
+              </button>
+
+              <button class="smart-action-btn tone-emerald" data-create-preset="grid">
+                <div class="smart-btn-top">
+                  <span class="smart-icon"><i data-icon="grid"></i></span>
+                  <span class="inner-sub-btn"><i data-icon="sparkles"></i> 2×2 Grid</span>
+                </div>
+                <div class="smart-btn-body">
+                  <strong>Multi-Button Grid</strong>
+                  <small>Button inside row layout</small>
+                </div>
+                <div class="smart-btn-footer">
+                  <span class="nested-chip">Side-by-Side</span>
+                  <span class="nested-chip accent">4 Ready</span>
+                </div>
+              </button>
+
+              <button class="smart-action-btn tone-amber" data-create-preset="channel">
+                <div class="smart-btn-top">
+                  <span class="smart-icon"><i data-icon="send"></i></span>
+                  <span class="inner-sub-btn"><i data-icon="zap"></i> Blast</span>
+                </div>
+                <div class="smart-btn-body">
+                  <strong>Channel Promo</strong>
+                  <small>Join + Discussion + VIP</small>
+                </div>
+                <div class="smart-btn-footer">
+                  <span class="nested-chip">3 CTA Pack</span>
+                  <span class="nested-chip accent">Pro Style</span>
+                </div>
+              </button>
             </div>
           </section>
 
           <div class="stat-row">
-            <button class="stat-card" data-page="posts"><span class="stat-icon brand"><i data-icon="layers"></i></span><span class="stat-text"><strong id="total-posts">—</strong><small>Saved posts</small></span><i data-icon="chevron"></i></button>
-            <button class="stat-card" data-page="community"><span class="stat-icon gold"><i data-icon="award"></i></span><span class="stat-text"><strong id="home-rank">—</strong><small>Global rank</small></span><i data-icon="chevron"></i></button>
+            <div class="stat-card colorful-stat violet-card" data-page="posts" role="button" tabindex="0">
+              <span class="stat-icon brand"><i data-icon="layers"></i></span>
+              <span class="stat-text">
+                <strong id="total-posts">—</strong>
+                <small>Saved posts</small>
+              </span>
+              <span class="stat-inner-action"><i data-icon="eye"></i> Library <i data-icon="chevron"></i></span>
+            </div>
+            <div class="stat-card colorful-stat gold-card" data-page="community" role="button" tabindex="0">
+              <span class="stat-icon gold"><i data-icon="award"></i></span>
+              <span class="stat-text">
+                <strong id="home-rank">—</strong>
+                <small>Global rank</small>
+              </span>
+              <span class="stat-inner-action gold"><i data-icon="sparkles"></i> Rank <i data-icon="chevron"></i></span>
+            </div>
           </div>
 
           <section class="section">
-            <div class="section-heading"><h2>Recently saved <span id="recent-count" class="count-badge">0</span></h2><button class="text-button" data-page="posts">View all <i data-icon="arrow"></i></button></div>
-            <div id="recent-posts" class="post-grid" aria-live="polite"><div class="skeleton"></div><div class="skeleton"></div></div>
+            <div class="section-heading">
+              <h2>Recently saved <span id="recent-count" class="count-badge">0</span></h2>
+              <div class="section-heading-btns">
+                <button class="pill-action-btn" data-create><i data-icon="plus"></i> <span>Quick Add</span></button>
+                <button class="text-button" data-page="posts">View all <i data-icon="arrow"></i></button>
+              </div>
+            </div>
+            <div id="recent-posts" class="post-grid" aria-live="polite">
+              <div class="skeleton"></div><div class="skeleton"></div>
+            </div>
           </section>
 
           <section class="section">
-            <div class="section-heading"><h2>How it works</h2><button class="text-button" data-help>Details <i data-icon="arrow"></i></button></div>
+            <div class="section-heading">
+              <h2>How it works</h2>
+              <button class="text-button" data-help>Full guide <i data-icon="arrow"></i></button>
+            </div>
             <div class="steps-row">
-              <div class="step-card"><span class="step-num">1</span><strong>Create</strong><small>Text, photo, buttons.</small></div>
-              <div class="step-card"><span class="step-num">2</span><strong>Save</strong><small>Kept in your library.</small></div>
-              <div class="step-card"><span class="step-num">3</span><strong>Share</strong><small>Any chat, any time.</small></div>
+              <div class="step-card tone-violet" data-create role="button" tabindex="0">
+                <div class="step-card-top">
+                  <span class="step-num">1</span>
+                  <span class="step-mini-btn">Start <i data-icon="plus"></i></span>
+                </div>
+                <strong>Create &amp; Style</strong>
+                <small>Text, photo &amp; custom button rows.</small>
+              </div>
+              <div class="step-card tone-emerald" data-page="posts" role="button" tabindex="0">
+                <div class="step-card-top">
+                  <span class="step-num">2</span>
+                  <span class="step-mini-btn">Library <i data-icon="layers"></i></span>
+                </div>
+                <strong>Save Privately</strong>
+                <small>Encrypted in your personal vault.</small>
+              </div>
+              <div class="step-card tone-amber" data-page="posts" role="button" tabindex="0">
+                <div class="step-card-top">
+                  <span class="step-num">3</span>
+                  <span class="step-mini-btn">Send <i data-icon="send"></i></span>
+                </div>
+                <strong>One-Tap Share</strong>
+                <small>Any chat, group or channel.</small>
+              </div>
             </div>
           </section>
         </div>
@@ -101,32 +290,57 @@
         <!-- SAVED -->
         <div id="posts-page" class="page" hidden>
           <div class="library-toolbar">
-            <label class="search"><i data-icon="search"></i><input id="post-search" type="search" placeholder="Search your posts" aria-label="Search loaded posts"></label>
-            <button class="icon-button" id="refresh-posts" aria-label="Refresh saved posts"><i data-icon="refresh"></i></button>
+            <label class="search">
+              <i data-icon="search"></i>
+              <input id="post-search" type="search" placeholder="Search text or button labels…" aria-label="Search loaded posts">
+              <button type="button" id="clear-search" class="search-inner-clear" hidden aria-label="Clear search"><i data-icon="close"></i></button>
+            </label>
+            <button class="icon-button colorful-icon-btn" id="refresh-posts" aria-label="Refresh saved posts"><i data-icon="refresh"></i></button>
           </div>
           <div class="library-filters">
-            <div class="filter-tabs" aria-label="Filter posts"><button class="selected" data-filter="all" aria-pressed="true">All</button><button data-filter="photo" aria-pressed="false"><i data-icon="image"></i> Photos</button><button data-filter="text" aria-pressed="false"><i data-icon="text"></i> Text</button></div>
-            <select id="post-sort" aria-label="Sort loaded posts"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+            <div class="filter-tabs" aria-label="Filter posts">
+              <button class="selected" data-filter="all" aria-pressed="true"><span>All</span> <em id="count-all" class="tab-inner-badge">0</em></button>
+              <button data-filter="photo" aria-pressed="false"><i data-icon="image"></i> <span>Photos</span> <em id="count-photo" class="tab-inner-badge">0</em></button>
+              <button data-filter="text" aria-pressed="false"><i data-icon="text"></i> <span>Text</span> <em id="count-text" class="tab-inner-badge">0</em></button>
+              <button data-filter="buttons" aria-pressed="false"><i data-icon="link"></i> <span>With Buttons</span> <em id="count-buttons" class="tab-inner-badge">0</em></button>
+            </div>
+            <select id="post-sort" aria-label="Sort loaded posts">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="buttons">Most buttons</option>
+            </select>
           </div>
-          <div class="library-meta"><span><i data-icon="lock"></i> Only you can see these</span><span id="result-count" role="status"></span></div>
+          <div class="library-meta">
+            <span><i data-icon="lock"></i> Private vault · Tap any inner button for instant actions</span>
+            <span id="result-count" role="status"></span>
+          </div>
           <div id="library-posts" class="post-grid library-grid" aria-live="polite"></div>
-          <button class="button secondary load-more" id="load-more" hidden>Load more <i data-icon="chevron-down"></i></button>
+          <button class="button secondary load-more" id="load-more" hidden>
+            <span>Load more posts</span>
+            <span class="btn-inner-pill"><i data-icon="chevron-down"></i> Next 12</span>
+          </button>
         </div>
 
         <!-- RANK -->
         <div id="community-page" class="page" hidden>
           <section class="rank-hero">
             <span class="stat-icon gold big"><i data-icon="award"></i></span>
-            <div><h2>Top 100 creators</h2><p>All time · Most posts created</p></div>
+            <div>
+              <h2>Top 100 Creators</h2>
+              <p>All time · Ranked by saved posts in studio</p>
+            </div>
             <span class="pill">Global</span>
           </section>
           <div id="my-rank" class="my-rank" hidden></div>
           <div id="podium" class="podium" hidden></div>
           <div class="card leaderboard-card">
-            <div class="leader-head"><span>Rank / Creator</span><span>Posts</span></div>
+            <div class="leader-head"><span>Rank / Creator</span><span>Saved Posts</span></div>
             <div id="leaderboard" aria-live="polite"></div>
           </div>
-          <details class="option-group"><summary><i data-icon="help"></i> How ranking works <i data-icon="chevron-down"></i></summary><p>Each saved post counts once. Sending it again does not add to your score. Ties are ordered by account ID. Only names and counts are public.</p></details>
+          <details class="option-group">
+            <summary><i data-icon="help"></i> How ranking works <i data-icon="chevron-down"></i></summary>
+            <p>Each saved post counts once. Sending it again does not add to your score. Ties are ordered by account ID. Only names and counts are public.</p>
+          </details>
         </div>
 
         <!-- PROFILE -->
@@ -135,23 +349,48 @@
             <div class="profile-cover"><span class="ring ring-a"></span><span class="ring ring-b"></span></div>
             <div class="profile-body">
               <div class="avatar extra-large user-avatar">Y</div>
-              <span class="creator-badge"><i data-icon="check-circle"></i> Telegram</span>
+              <span class="creator-badge"><i data-icon="check-circle"></i> Verified Telegram</span>
               <h2 class="user-name">Your profile</h2>
               <p class="user-handle">Your Telegram account</p>
               <div class="profile-stats">
-                <div><span>Saved posts</span><strong id="profile-total">—</strong></div>
-                <div><span>Global rank</span><strong id="profile-rank">—</strong></div>
+                <div class="profile-stat-box" data-page="posts" role="button" tabindex="0">
+                  <span>Saved posts</span>
+                  <strong id="profile-total">—</strong>
+                  <em class="stat-mini-pill">Open Vault <i data-icon="arrow"></i></em>
+                </div>
+                <div class="profile-stat-box" data-page="community" role="button" tabindex="0">
+                  <span>Global rank</span>
+                  <strong id="profile-rank">—</strong>
+                  <em class="stat-mini-pill gold">Leaderboard <i data-icon="arrow"></i></em>
+                </div>
               </div>
             </div>
           </section>
 
           <div class="card list-card">
-            <button class="menu-row" data-page="posts"><span class="stat-icon brand"><i data-icon="layers"></i></span><span>Saved posts</span><i data-icon="chevron"></i></button>
-            <button class="menu-row" data-page="community"><span class="stat-icon gold"><i data-icon="award"></i></span><span>Global rank</span><i data-icon="chevron"></i></button>
-            <button class="menu-row" data-help><span class="stat-icon mint"><i data-icon="help"></i></span><span>How to use Post Studio</span><i data-icon="chevron"></i></button>
+            <button class="menu-row" data-create>
+              <span class="stat-icon brand"><i data-icon="plus"></i></span>
+              <span class="menu-row-main"><strong>Create new post</strong><small>With custom multi-button rows</small></span>
+              <span class="row-inner-btn violet">Compose <i data-icon="chevron"></i></span>
+            </button>
+            <button class="menu-row" data-page="posts">
+              <span class="stat-icon mint"><i data-icon="layers"></i></span>
+              <span class="menu-row-main"><strong>Saved posts library</strong><small>Manage &amp; share your posts</small></span>
+              <span class="row-inner-btn emerald">Browse <i data-icon="chevron"></i></span>
+            </button>
+            <button class="menu-row" data-page="community">
+              <span class="stat-icon gold"><i data-icon="award"></i></span>
+              <span class="menu-row-main"><strong>Global creator rank</strong><small>See top 100 leaderboard</small></span>
+              <span class="row-inner-btn amber">View <i data-icon="chevron"></i></span>
+            </button>
+            <button class="menu-row" data-help>
+              <span class="stat-icon ocean"><i data-icon="help"></i></span>
+              <span class="menu-row-main"><strong>How to use Post Studio</strong><small>Quick guide &amp; tips</small></span>
+              <span class="row-inner-btn ocean">Guide <i data-icon="chevron"></i></span>
+            </button>
           </div>
 
-          <h3 class="group-label">Settings</h3>
+          <h3 class="group-label">Settings &amp; Preferences</h3>
           <div class="card list-card settings-card">
             <div class="setting-row">
               <span class="setting-label"><i data-icon="sun"></i> Appearance</span>
@@ -161,85 +400,335 @@
                 <button type="button" data-theme-choice="system" aria-pressed="false">Auto</button>
               </div>
             </div>
-            <div class="setting-row"><span class="setting-label"><i data-icon="user"></i> Telegram ID</span><strong id="profile-id" class="mono">—</strong></div>
-            <details class="setting-details"><summary><span class="setting-label"><i data-icon="shield"></i> Privacy</span><i data-icon="chevron-down"></i></summary><p>Only you can open your posts. Photos stay on Telegram. Your name and post count appear in the global ranking.</p></details>
+            <div class="setting-row">
+              <span class="setting-label"><i data-icon="user"></i> Telegram ID</span>
+              <strong id="profile-id" class="mono">—</strong>
+            </div>
+            <details class="setting-details">
+              <summary><span class="setting-label"><i data-icon="shield"></i> Privacy &amp; Security</span><i data-icon="chevron-down"></i></summary>
+              <p>Only you can open your posts. Photos stay on Telegram servers. Button destination links stay hidden inside your private mini app view and are only attached when you share.</p>
+            </details>
           </div>
-          <p class="footer-note">Post Studio · Built for Telegram</p>
+          <p class="footer-note">Post Studio Pro · Crafted for Telegram Mobile</p>
         </div>
       </main>
     </div>
   </div>
 
-  <!-- Phone bottom navigation with a centre create action -->
+  <!-- Phone bottom navigation with a centre colorful multi-layer create action -->
   <nav class="tabbar" aria-label="Mobile navigation">
-    <button class="tab active" data-page="overview"><i data-icon="home"></i><span>Home</span></button>
-    <button class="tab" data-page="posts"><i data-icon="layers"></i><span>Saved</span></button>
-    <button class="tab-create" data-create aria-label="New post"><span><i data-icon="plus"></i></span></button>
-    <button class="tab" data-page="community"><i data-icon="award"></i><span>Rank</span></button>
-    <button class="tab" data-page="profile"><i data-icon="user"></i><span>Profile</span></button>
+    <button class="tab active" data-page="overview">
+      <span class="tab-icon-pill"><i data-icon="home"></i></span>
+      <span>Home</span>
+    </button>
+    <button class="tab" data-page="posts">
+      <span class="tab-icon-pill"><i data-icon="layers"></i><em id="mobile-nav-count" class="tab-mini-count" hidden>0</em></span>
+      <span>Saved</span>
+    </button>
+    <button class="tab-create" data-create aria-label="New post">
+      <span class="tab-create-outer">
+        <span class="tab-create-inner"><i data-icon="plus"></i></span>
+        <em class="tab-create-tag">NEW</em>
+      </span>
+    </button>
+    <button class="tab" data-page="community">
+      <span class="tab-icon-pill"><i data-icon="award"></i></span>
+      <span>Rank</span>
+    </button>
+    <button class="tab" data-page="profile">
+      <span class="tab-icon-pill"><i data-icon="user"></i></span>
+      <span>Profile</span>
+    </button>
   </nav>
 
   <!-- Composer -->
   <dialog id="composer" class="modal composer-modal" aria-labelledby="composer-title">
     <span class="sheet-handle" aria-hidden="true"></span>
-    <div class="modal-heading"><div><h2 id="composer-title">New post</h2><p class="modal-sub">Saved privately. Share whenever you like.</p></div><button class="icon-button" data-close="composer" aria-label="Close composer"><i data-icon="close"></i></button></div>
+    <div class="modal-heading">
+      <div>
+        <div class="modal-title-row">
+          <h2 id="composer-title">Create Post</h2>
+          <span class="pill colorful-pill"><i data-icon="sparkles"></i> All-in-One</span>
+        </div>
+        <p class="modal-sub">Everything in one screen · Text, Photo, Button Rows &amp; Live Preview</p>
+      </div>
+      <button class="icon-button" data-close="composer" aria-label="Close composer"><i data-icon="close"></i></button>
+    </div>
+
     <form id="compose-form">
+      <!-- 1. Rich Text Editor with Compound Formatting Bar -->
       <div class="editor-box">
         <div class="format-toolbar" aria-label="Text formatting">
-          <button type="button" data-format="b" aria-label="Bold text"><b>B</b></button>
-          <button type="button" data-format="i" aria-label="Italic text"><em>I</em></button>
-          <button type="button" data-format="u" aria-label="Underline text"><u>U</u></button>
-          <button type="button" data-format="code" aria-label="Code text"><i data-icon="code"></i></button>
+          <button type="button" class="fmt-btn" data-format="b" aria-label="Bold text" title="Bold"><b>B</b></button>
+          <button type="button" class="fmt-btn" data-format="i" aria-label="Italic text" title="Italic"><em>I</em></button>
+          <button type="button" class="fmt-btn" data-format="u" aria-label="Underline text" title="Underline"><u>U</u></button>
+          <button type="button" class="fmt-btn" data-format="s" aria-label="Strikethrough text" title="Strikethrough"><s>S</s></button>
+          <button type="button" class="fmt-btn" data-format="code" aria-label="Inline code" title="Code"><i data-icon="code"></i></button>
+          <button type="button" class="fmt-btn" data-format="blockquote" aria-label="Quote block" title="Quote"><i data-icon="quote"></i></button>
+          <button type="button" class="fmt-btn fmt-pill-btn" id="insert-template-btn" title="Insert starter post template">
+            <i data-icon="sparkles"></i> <span>Template</span>
+          </button>
           <span id="char-count" class="char-count">0 / 4,096</span>
         </div>
-        <textarea id="post-text" name="text" rows="5" maxlength="4096" placeholder="What would you like to share?" aria-describedby="char-count"></textarea>
+        <textarea id="post-text" name="text" rows="4" maxlength="4096" placeholder="Write your message here… Use the toolbar above for Bold, Italic, Quotes or tap Template for instant ideas." aria-describedby="char-count"></textarea>
       </div>
 
-      <details class="option-group" id="photo-options"><summary><span class="stat-icon brand sm"><i data-icon="image"></i></span><span class="summary-text"><strong>Add photo</strong><small>Optional · JPG, PNG, WebP</small></span><i data-icon="chevron-down"></i></summary>
-        <label class="upload-zone" id="upload-zone"><input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" aria-label="Upload a post photo"><i data-icon="image-plus"></i><strong>Choose a photo</strong><span>Up to 9 MB</span></label>
-        <div id="photo-preview" class="photo-preview" hidden><img id="selected-photo" alt="Your selected photo"><button class="icon-button" id="remove-photo" type="button" aria-label="Remove photo"><i data-icon="close"></i></button></div>
+      <!-- 2. Photo Upload Section -->
+      <details class="option-group" id="photo-options">
+        <summary>
+          <span class="stat-icon brand sm"><i data-icon="image"></i></span>
+          <span class="summary-text">
+            <strong>Photo Attachment</strong>
+            <small id="photo-summary-sub">Optional · JPG, PNG, WebP up to 9 MB</small>
+          </span>
+          <span class="summary-inner-pill" id="photo-status-pill">Add Photo</span>
+          <i data-icon="chevron-down"></i>
+        </summary>
+        <label class="upload-zone" id="upload-zone">
+          <input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" aria-label="Upload a post photo">
+          <span class="upload-icon-badge"><i data-icon="image-plus"></i></span>
+          <strong>Tap to choose photo or drag &amp; drop</strong>
+          <span>High-res JPEG, PNG or WebP · Max 9 MB</span>
+        </label>
+        <div id="photo-preview" class="photo-preview" hidden>
+          <img id="selected-photo" alt="Your selected photo">
+          <button class="photo-remove-pill" id="remove-photo" type="button" aria-label="Remove photo">
+            <i data-icon="close"></i> <span>Remove</span>
+          </button>
+        </div>
       </details>
 
-      <details class="option-group" id="button-options"><summary><span class="stat-icon mint sm"><i data-icon="link"></i></span><span class="summary-text"><strong>Add buttons</strong><small>Optional · Up to 10 links</small></span><i data-icon="chevron-down"></i></summary>
-        <div id="button-fields"></div>
-        <button class="text-button" id="add-button" type="button"><i data-icon="plus"></i> Add button</button>
+      <!-- 3. Smart Button Studio (Button inside Button + Flexible Quantity + Row Layout) -->
+      <details class="option-group smart-button-studio" id="button-options" open>
+        <summary>
+          <span class="stat-icon mint sm"><i data-icon="link"></i></span>
+          <span class="summary-text">
+            <strong>Smart Button Builder</strong>
+            <small>Add as many as you need · Single or side-by-side buttons</small>
+          </span>
+          <span class="summary-inner-pill mint" id="button-count-badge">0 / 24</span>
+          <i data-icon="chevron-down"></i>
+        </summary>
+
+        <div class="button-studio-controls">
+          <!-- Instant Count & Layout Presets ("Jisko jitna jaruri hota hai button usko itna do") -->
+          <div class="preset-bar-label">
+            <span><i data-icon="zap"></i> Instant Button Allocation (1-Tap):</span>
+            <button type="button" class="clear-buttons-btn" id="clear-all-buttons" hidden>Clear all</button>
+          </div>
+          <div class="button-quick-scaler" role="group" aria-label="Quick button count">
+            <button type="button" class="scaler-chip" data-btn-count="0">
+              <span class="scaler-num">0</span>
+              <span class="scaler-sub">None</span>
+            </button>
+            <button type="button" class="scaler-chip" data-btn-count="1">
+              <span class="scaler-num">1</span>
+              <span class="scaler-sub">Single CTA</span>
+            </button>
+            <button type="button" class="scaler-chip" data-btn-count="2-row">
+              <span class="scaler-num">2</span>
+              <span class="scaler-sub">Side×Side</span>
+            </button>
+            <button type="button" class="scaler-chip" data-btn-count="3-pack">
+              <span class="scaler-num">3</span>
+              <span class="scaler-sub">1 Top + 2 Split</span>
+            </button>
+            <button type="button" class="scaler-chip" data-btn-count="4-grid">
+              <span class="scaler-num">4</span>
+              <span class="scaler-sub">2×2 Grid</span>
+            </button>
+            <button type="button" class="scaler-chip" data-btn-count="6-pack">
+              <span class="scaler-num">6</span>
+              <span class="scaler-sub">Mega Pack</span>
+            </button>
+          </div>
+
+          <!-- Smart Templates Bar -->
+          <div class="smart-presets-scroll" aria-label="Smart button templates">
+            <button type="button" class="preset-pill violet" data-preset="channel">
+              <i data-icon="send"></i> <span>Channel Pack</span> <em>3 Btns</em>
+            </button>
+            <button type="button" class="preset-pill emerald" data-preset="store">
+              <i data-icon="sparkles"></i> <span>Shop / Deal</span> <em>2 Btns</em>
+            </button>
+            <button type="button" class="preset-pill rose" data-preset="social">
+              <i data-icon="award"></i> <span>Social Hub</span> <em>4 Btns</em>
+            </button>
+            <button type="button" class="preset-pill ocean" data-preset="support">
+              <i data-icon="user"></i> <span>Contact + Help</span> <em>2 Btns</em>
+            </button>
+          </div>
+        </div>
+
+        <!-- Visual Row & Sub-Button Container -->
+        <div id="button-fields" class="button-rows-container"></div>
+
+        <!-- Dual Compound Add Bar (Button inside Button) -->
+        <div class="add-button-compound">
+          <button class="compound-main-btn" id="add-button" type="button">
+            <span class="compound-icon"><i data-icon="plus"></i></span>
+            <span class="compound-text">
+              <strong>Add New Button Row</strong>
+              <small>Full-width colorful button</small>
+            </span>
+          </button>
+          <button class="compound-sub-btn" id="add-inline-button" type="button" title="Add button inside the last row (side-by-side)">
+            <i data-icon="columns"></i>
+            <span>+ Inside Row</span>
+          </button>
+        </div>
       </details>
 
-      <details class="option-group" open><summary><span class="stat-icon gold sm"><i data-icon="eye"></i></span><span class="summary-text"><strong>Preview</strong><small>How it looks in Telegram</small></span><i data-icon="chevron-down"></i></summary>
-        <div class="telegram-preview"><img id="live-photo" alt="Photo preview" hidden><div id="live-text" class="live-text"></div></div>
+      <!-- 4. Live Interactive Telegram Preview -->
+      <details class="option-group" open>
+        <summary>
+          <span class="stat-icon gold sm"><i data-icon="eye"></i></span>
+          <span class="summary-text">
+            <strong>Live Telegram &amp; Colorful Preview</strong>
+            <small>See exact row layout &amp; inner button badges</small>
+          </span>
+          <span class="summary-inner-pill gold">Live</span>
+          <i data-icon="chevron-down"></i>
+        </summary>
+        <div class="telegram-preview">
+          <img id="live-photo" alt="Photo preview" hidden>
+          <div id="live-text" class="live-text"></div>
+        </div>
         <div id="live-buttons" class="live-buttons"></div>
       </details>
 
       <p id="compose-error" class="form-error" role="alert" hidden></p>
-      <div class="modal-footer"><button class="button secondary" type="button" data-close="composer">Cancel</button><button class="button primary" type="submit" id="submit-post">Save post <i data-icon="check"></i></button></div>
+      <div class="modal-footer">
+        <button class="button secondary" type="button" data-close="composer">Cancel</button>
+        <button class="button primary colorful-cta" type="submit" id="submit-post">
+          <span class="btn-icon-box"><i data-icon="check"></i></span>
+          <span>Save to Studio</span>
+          <span class="btn-inner-pill">Ready</span>
+        </button>
+      </div>
     </form>
   </dialog>
 
   <!-- Post detail -->
   <dialog id="detail" class="modal detail-modal" aria-labelledby="detail-title">
     <span class="sheet-handle" aria-hidden="true"></span>
-    <div class="modal-heading"><div><h2 id="detail-title">Saved post</h2><p class="modal-sub">Private · Only you can open this</p></div><button class="icon-button" data-close="detail" aria-label="Close post"><i data-icon="close"></i></button></div>
+    <div class="modal-heading">
+      <div>
+        <div class="modal-title-row">
+          <h2 id="detail-title">Saved Post</h2>
+          <span class="pill colorful-pill">Private Vault</span>
+        </div>
+        <p class="modal-sub">Only you can view or share this post</p>
+      </div>
+      <button class="icon-button" data-close="detail" aria-label="Close post"><i data-icon="close"></i></button>
+    </div>
+
     <div id="detail-content"></div>
-    <details class="option-group" id="send-options"><summary><span class="stat-icon brand sm"><i data-icon="send"></i></span><span class="summary-text"><strong>Send post</strong><small>Choose a destination</small></span><i data-icon="chevron-down"></i></summary>
-      <button class="menu-row" id="share-post"><span class="stat-icon brand sm"><i data-icon="send"></i></span><span>Choose a Telegram chat</span><i data-icon="chevron"></i></button>
-      <button class="menu-row" id="send-self"><span class="stat-icon mint sm"><i data-icon="user"></i></span><span>Send to my bot</span><i data-icon="chevron"></i></button>
-      <details class="nested-option"><summary>Post to my channel <i data-icon="chevron-down"></i></summary>
-        <form id="send-form"><label class="field-label" for="send-target">Channel / group you manage</label><input id="send-target" placeholder="@channel or chat ID" maxlength="64" required><p class="save-hint">You and the bot need posting permission.</p><button class="button primary" type="submit">Send to channel <i data-icon="send"></i></button></form>
+
+    <!-- All-in-One Instant Send Hub -->
+    <details class="option-group" id="send-options" open>
+      <summary>
+        <span class="stat-icon brand sm"><i data-icon="send"></i></span>
+        <span class="summary-text">
+          <strong>Instant Share &amp; Publish Hub</strong>
+          <small>Send to any chat, your bot, or channel in one tap</small>
+        </span>
+        <i data-icon="chevron-down"></i>
+      </summary>
+
+      <div class="send-action-cards">
+        <button class="smart-send-btn violet" id="share-post" type="button">
+          <span class="stat-icon brand sm"><i data-icon="send"></i></span>
+          <span class="send-btn-text">
+            <strong>Choose a Telegram Chat</strong>
+            <small>Forward to any user, group or channel</small>
+          </span>
+          <span class="inner-cta-chip">Share <i data-icon="arrow"></i></span>
+        </button>
+
+        <button class="smart-send-btn emerald" id="send-self" type="button">
+          <span class="stat-icon mint sm"><i data-icon="user"></i></span>
+          <span class="send-btn-text">
+            <strong>Send to My Bot Chat</strong>
+            <small>Receive instant copy in your bot</small>
+          </span>
+          <span class="inner-cta-chip">1-Tap <i data-icon="zap"></i></span>
+        </button>
+      </div>
+
+      <details class="nested-option">
+        <summary>
+          <span><i data-icon="award"></i> Direct Publish to Channel / Group</span>
+          <span class="summary-inner-pill">Admin</span>
+          <i data-icon="chevron-down"></i>
+        </summary>
+        <form id="send-form" class="channel-send-form">
+          <label class="field-label" for="send-target">Channel @username or Chat ID</label>
+          <div class="compound-input-group">
+            <input id="send-target" placeholder="@channel or -100123456789" maxlength="64" required>
+            <button class="button primary colorful-cta inline-submit" type="submit">
+              <span>Publish</span>
+              <span class="btn-inner-pill"><i data-icon="send"></i></span>
+            </button>
+          </div>
+          <p class="save-hint">You and the bot must have admin posting permission in the destination chat.</p>
+        </form>
       </details>
+
       <p id="send-status" class="save-hint" role="status"></p>
       <p id="send-error" class="form-error" role="alert" hidden></p>
     </details>
-    <div class="modal-footer"><button class="button secondary" id="copy-post"><i data-icon="copy"></i> Copy text</button><button class="button primary" id="show-send"><i data-icon="send"></i> Send post</button></div>
+
+    <div class="modal-footer detail-footer">
+      <button class="button secondary" id="copy-post" type="button">
+        <i data-icon="copy"></i> <span>Copy Text</span>
+      </button>
+      <button class="button secondary" id="clone-post" type="button">
+        <i data-icon="layers"></i> <span>Remix in Studio</span>
+      </button>
+      <button class="button primary colorful-cta" id="show-send" type="button">
+        <i data-icon="send"></i> <span>Share Now</span>
+      </button>
+    </div>
   </dialog>
 
   <!-- Help -->
   <dialog id="help" class="modal help-modal" aria-labelledby="help-title">
     <span class="sheet-handle" aria-hidden="true"></span>
-    <div class="modal-heading"><div><h2 id="help-title">Three simple steps</h2><p class="modal-sub">Everything you need to know</p></div><button class="icon-button" data-close="help" aria-label="Close help"><i data-icon="close"></i></button></div>
-    <div class="help-step"><b>01</b><div><h3>Create</h3><p>Write a post. Photo and buttons are optional.</p></div></div>
-    <div class="help-step"><b>02</b><div><h3>Save</h3><p>Tap Save post to keep it in your private library.</p></div></div>
-    <div class="help-step"><b>03</b><div><h3>Share anytime</h3><p>Open Saved, select a post and choose Send post.</p></div></div>
-    <div class="modal-footer"><button class="button primary" data-close="help">Got it</button></div>
+    <div class="modal-heading">
+      <div>
+        <h2 id="help-title">Post Studio Pro Guide</h2>
+        <p class="modal-sub">Everything you need in one mobile workspace</p>
+      </div>
+      <button class="icon-button" data-close="help" aria-label="Close help"><i data-icon="close"></i></button>
+    </div>
+    <div class="help-step">
+      <b>01</b>
+      <div>
+        <h3>Smart Button Builder (Button inside Button)</h3>
+        <p>Choose 0, 1, 2, 3, 4, or up to 24 buttons. Place up to 3 buttons side-by-side in a single row, add inner status badges (like HOT, NEW, VIP), and pick vibrant color themes.</p>
+      </div>
+    </div>
+    <div class="help-step">
+      <b>02</b>
+      <div>
+        <h3>One-Screen All-in-One Creation</h3>
+        <p>Format text with HTML toolbar, attach photos, apply 1-tap button packs, and preview everything live before saving.</p>
+      </div>
+    </div>
+    <div class="help-step">
+      <b>03</b>
+      <div>
+        <h3>Instant Actions on Every Card</h3>
+        <p>Every saved post card includes inner quick-buttons to Copy, Remix, or Share to any Telegram chat or channel immediately.</p>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="button primary colorful-cta" data-close="help">
+        <span>Got it, let’s create</span>
+        <span class="btn-inner-pill"><i data-icon="check"></i></span>
+      </button>
+    </div>
   </dialog>
 
   <div id="toast" class="toast" role="status" hidden></div>

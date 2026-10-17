@@ -42,7 +42,10 @@ compose_receipts = {}
 session_lock = threading.RLock()
 SESSION_TTL = 3600
 CREATE, CANCEL, DONE = 'Create post', 'Cancel', 'Preview post'
-ADD, EDIT, PUBLISH, CUSTOM = 'Add a button', 'Edit content', 'Publish to channel', 'Choose another chat'
+ADD, ADD_SAME_ROW, EDIT, PUBLISH, CUSTOM = 'Add a button', 'Add side-by-side button', 'Edit content', 'Publish to channel', 'Choose another chat'
+MAX_BUTTONS = 24
+MAX_COLS_PER_ROW = 3
+BUTTON_THEMES = ('violet', 'emerald', 'amber', 'rose', 'ocean', 'sunset')
 
 
 class PlainText(HTMLParser):
@@ -72,6 +75,59 @@ def unpack_content(value):
     return {'text': value or '', 'photo_file_id': None}
 
 
+def safe_button_meta(raw_meta, count):
+    """Ensure every button has a clean row index, badge and color theme."""
+    cleaned_meta = []
+    raw_list = raw_meta if isinstance(raw_meta, list) else []
+    for idx in range(count):
+        item = raw_list[idx] if idx < len(raw_list) and isinstance(raw_list[idx], dict) else {}
+        try:
+            row_idx = max(0, min(int(item.get('row', idx)), MAX_BUTTONS - 1))
+        except (TypeError, ValueError):
+            row_idx = idx
+        badge = display_text(str(item.get('badge') or '').strip())[:18]
+        color = str(item.get('color') or '').strip().lower()
+        if color not in BUTTON_THEMES:
+            color = BUTTON_THEMES[idx % len(BUTTON_THEMES)]
+        cleaned_meta.append({'row': row_idx, 'badge': badge, 'color': color})
+    return cleaned_meta
+
+
+def group_buttons_into_rows(buttons):
+    """Group buttons by row index (up to MAX_COLS_PER_ROW per row) for InlineKeyboardMarkup."""
+    if not buttons:
+        return []
+    grouped = {}
+    order = []
+    for idx, btn in enumerate(buttons):
+        r = btn.get('row', idx)
+        if r not in grouped:
+            grouped[r] = []
+            order.append(r)
+        grouped[r].append(btn)
+    rows = []
+    for r in order:
+        chunk = grouped[r]
+        for start in range(0, len(chunk), MAX_COLS_PER_ROW):
+            rows.append(chunk[start:start + MAX_COLS_PER_ROW])
+    return rows
+
+
+def build_inline_markup(buttons):
+    """Create a Telegram InlineKeyboardMarkup supporting multi-column rows."""
+    if not buttons:
+        return None
+    markup = InlineKeyboardMarkup(row_width=MAX_COLS_PER_ROW)
+    for row in group_buttons_into_rows(buttons):
+        inline_row = []
+        for b in row:
+            badge = (b.get('badge') or '').strip()
+            label = f"{b['name']} · {badge}" if badge and badge.lower() not in b['name'].lower() else b['name']
+            inline_row.append(InlineKeyboardButton(label[:64], url=b['url']))
+        markup.row(*inline_row)
+    return markup
+
+
 def serialize_post(row):
     content = unpack_content(row.get('message_text'))
     try:
@@ -80,11 +136,21 @@ def serialize_post(row):
             names = [str(names)]
     except (TypeError, ValueError):
         names = [row.get('btn_name', '')]
+    clean_names = [display_text(name) for name in names if name]
+    meta = safe_button_meta(content.get('btn_meta'), len(clean_names))
+    structured = []
+    for name, m in zip(clean_names, meta):
+        structured.append({'name': name, 'row': m['row'], 'badge': m['badge'], 'color': m['color']})
+    button_rows = [
+        [{'name': b['name'], 'badge': b['badge'], 'color': b['color']} for b in r]
+        for r in group_buttons_into_rows(structured)
+    ]
     # Deliberately whitelist fields: no btn_url, file IDs or other users' IDs.
     return {
         'id': str(row['id']), 'text': display_text(content.get('text')),
         'has_photo': bool(content.get('photo_file_id')),
-        'button_names': [display_text(name) for name in names if name],
+        'button_names': clean_names,
+        'button_rows': button_rows,
         'created_at': row.get('created_at'),
     }
 
@@ -248,7 +314,20 @@ def save_to_supabase(user, draft):
         return False
     try:
         # Only a reusable Telegram file reference is persisted. No image/base64/blob.
-        content = json.dumps({'_post_studio': 1, 'text': draft['text'], 'photo_file_id': draft.get('photo_file_id')})
+        btn_meta = [
+            {
+                'row': int(b.get('row', idx)),
+                'badge': display_text(str(b.get('badge') or '').strip())[:18],
+                'color': str(b.get('color') or BUTTON_THEMES[idx % len(BUTTON_THEMES)]),
+            }
+            for idx, b in enumerate(draft['buttons'])
+        ]
+        content = json.dumps({
+            '_post_studio': 1,
+            'text': draft['text'],
+            'photo_file_id': draft.get('photo_file_id'),
+            'btn_meta': btn_meta,
+        })
         supabase.table('posts').insert({
             'user_id': user.id, 'message_text': content,
             'btn_name': json.dumps([b['name'] for b in draft['buttons']]),
@@ -307,10 +386,7 @@ def new_draft(chat_id):
 
 
 def send_post(chat_id, draft):
-    markup = InlineKeyboardMarkup()
-    for button in draft['buttons']:
-        markup.add(InlineKeyboardButton(button['name'], url=button['url']))
-    markup = markup if draft['buttons'] else None
+    markup = build_inline_markup(draft['buttons'])
     if draft.get('photo_file_id'):
         return bot.send_photo(chat_id, draft['photo_file_id'], caption=draft['text'] or None, parse_mode='HTML', reply_markup=markup)
     return bot.send_message(chat_id, draft['text'], parse_mode='HTML', reply_markup=markup)
@@ -319,7 +395,14 @@ def send_post(chat_id, draft):
 def stage_menu(draft):
     stage = draft['stage']
     if stage == 'buttons':
-        return keyboard(ADD, DONE, CANCEL) if len(draft['buttons']) < 10 else keyboard(DONE, CANCEL)
+        if len(draft['buttons']) >= MAX_BUTTONS:
+            return keyboard(DONE, CANCEL)
+        if draft['buttons']:
+            last_row = draft['buttons'][-1].get('row', len(draft['buttons']) - 1)
+            same_row_count = sum(1 for b in draft['buttons'] if b.get('row') == last_row)
+            if same_row_count < MAX_COLS_PER_ROW:
+                return keyboard(ADD, ADD_SAME_ROW, DONE, CANCEL)
+        return keyboard(ADD, DONE, CANCEL)
     if stage == 'publish':
         return keyboard(PUBLISH, CUSTOM, CANCEL)
     return keyboard(CANCEL)
@@ -424,9 +507,10 @@ def conversation(message):
                 bot.send_message(chat_id, str(error), reply_markup=keyboard(CANCEL))
                 return
             draft.update(text=content, photo_file_id=photos[-1].file_id if photos else None, stage='buttons')
-            bot.send_message(chat_id, '2 / 3 · Optional buttons\n\nAdd a call-to-action button, or go straight to the preview. Up to 10 buttons.', reply_markup=stage_menu(draft))
-        elif stage == 'buttons' and text == ADD and len(draft['buttons']) < 10:
-            draft['stage'] = 'button_name'
+            bot.send_message(chat_id, f'2 / 3 · Optional buttons\n\nAdd a call-to-action button (single or side-by-side rows), or go straight to the preview. Up to {MAX_BUTTONS} buttons.', reply_markup=stage_menu(draft))
+        elif stage == 'buttons' and text in (ADD, ADD_SAME_ROW) and len(draft['buttons']) < MAX_BUTTONS:
+            same_row = text == ADD_SAME_ROW and bool(draft['buttons'])
+            draft.update(stage='button_name', same_row=same_row)
             bot.send_message(chat_id, 'What should the button say? Keep it under 64 characters.', reply_markup=keyboard(CANCEL))
         elif stage == 'buttons' and text == DONE:
             finish_preview(chat_id, message.from_user, draft)
@@ -442,9 +526,14 @@ def conversation(message):
             except ValueError as error:
                 bot.send_message(chat_id, str(error), reply_markup=keyboard(CANCEL))
                 return
-            draft['buttons'].append({'name': draft.pop('current_btn_name'), 'url': url})
+            same_row = draft.pop('same_row', False)
+            if same_row and draft['buttons']:
+                row_idx = draft['buttons'][-1].get('row', len(draft['buttons']) - 1)
+            else:
+                row_idx = (max((b.get('row', 0) for b in draft['buttons']), default=-1) + 1)
+            draft['buttons'].append({'name': draft.pop('current_btn_name'), 'url': url, 'row': row_idx})
             draft['stage'] = 'buttons'
-            bot.send_message(chat_id, f'{len(draft["buttons"])} button(s) added. Preview when you’re ready.', reply_markup=stage_menu(draft))
+            bot.send_message(chat_id, f'{len(draft["buttons"])} button(s) added. Add another, place one side-by-side, or preview when ready.', reply_markup=stage_menu(draft))
         elif stage == 'publish' and text == PUBLISH:
             publish(chat_id, message.from_user.id, DEFAULT_CHANNEL, draft)
         elif stage == 'publish' and text == CUSTOM:
@@ -470,9 +559,16 @@ def restore_post(row):
         except (TypeError, ValueError):
             return [raw] if raw else []
     names, urls = values(row.get('btn_name')), values(row.get('btn_url'))
-    return {'text': content.get('text') or '', 'photo_file_id': content.get('photo_file_id'),
-            'buttons': [{'name': str(name), 'url': normalize_url(str(url))}
-                        for name, url in zip(names, urls) if name and url]}
+    pairs = [(str(name), normalize_url(str(url))) for name, url in zip(names, urls) if name and url]
+    meta = safe_button_meta(content.get('btn_meta'), len(pairs))
+    return {
+        'text': content.get('text') or '',
+        'photo_file_id': content.get('photo_file_id'),
+        'buttons': [
+            {'name': name, 'url': url, 'row': m['row'], 'badge': m['badge'], 'color': m['color']}
+            for (name, url), m in zip(pairs, meta)
+        ],
+    }
 
 
 @app.post('/api/posts/<post_id>/send')
@@ -492,10 +588,7 @@ def send_saved_post(post_id):
             return jsonify(error='Post not found.'), 404
         draft = restore_post(rows[0])
         if payload['action'] == 'share':
-            markup = InlineKeyboardMarkup()
-            for button in draft['buttons']:
-                markup.add(InlineKeyboardButton(button['name'], url=button['url']))
-            markup = markup if draft['buttons'] else None
+            markup = build_inline_markup(draft['buttons'])
             result_id = hashlib.sha256(post_id.encode()).hexdigest()[:32]
             if draft['photo_file_id']:
                 result = InlineQueryResultCachedPhoto(result_id, draft['photo_file_id'],
@@ -540,13 +633,27 @@ def compose():
     try:
         validate_content(text, bool(photo))
         buttons = json.loads(request.form.get('buttons', '[]'))
-        if not isinstance(buttons, list) or len(buttons) > 10:
-            raise ValueError('A post can have up to 10 buttons.')
+        if not isinstance(buttons, list) or len(buttons) > MAX_BUTTONS:
+            raise ValueError(f'A post can have up to {MAX_BUTTONS} buttons.')
         cleaned = []
-        for button in buttons:
+        for idx, button in enumerate(buttons):
             if not isinstance(button, dict) or not isinstance(button.get('name'), str) or not 1 <= len(button['name'].strip()) <= 64:
                 raise ValueError('Each button needs a label of 1–64 characters.')
-            cleaned.append({'name': button['name'].strip(), 'url': normalize_url(button.get('url', ''))})
+            try:
+                row_idx = max(0, min(int(button.get('row', idx)), MAX_BUTTONS - 1))
+            except (TypeError, ValueError):
+                row_idx = idx
+            badge = display_text(str(button.get('badge') or '').strip())[:18]
+            color = str(button.get('color') or '').strip().lower()
+            if color not in BUTTON_THEMES:
+                color = BUTTON_THEMES[idx % len(BUTTON_THEMES)]
+            cleaned.append({
+                'name': button['name'].strip(),
+                'url': normalize_url(button.get('url', '')),
+                'row': row_idx,
+                'badge': badge,
+                'color': color,
+            })
         photo_buffer = None
         if photo:
             data = photo.read(9 * 1024 * 1024 + 1)
