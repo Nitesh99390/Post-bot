@@ -1,120 +1,171 @@
-"""Post model: media + text + coloured URL buttons, and the logic to send it."""
+"""Post validation and Telegram delivery."""
+
 from __future__ import annotations
 
 import html
 import re
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
 
-# key -> (label shown to the user, Telegram Bot API button style)
-COLORS: dict[str, tuple[str, str]] = {
-    "red": ("🔴 Red", "danger"),
-    "green": ("🟢 Green", "success"),
-    "blue": ("🔵 Blue", "primary"),
+COLORS = {
+    "blue": ("Blue", "primary"),
+    "green": ("Green", "success"),
+    "red": ("Red", "danger"),
 }
-
 MAX_BUTTONS = 10
 MAX_BUTTON_TEXT = 64
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4000
-
-CAPTION_MEDIA = ("photo", "video", "animation")
-MEDIA_NAMES = {"photo": "Photo", "video": "Video", "animation": "GIF", "sticker": "Sticker"}
+MEDIA_NAMES = {
+    "photo": "Photo",
+    "video": "Video",
+    "animation": "GIF",
+    "sticker": "Sticker",
+}
 
 
 def plain_len(html_text: str) -> int:
-    """Visible length of an HTML string (tags removed, entities decoded)."""
-    return len(html.unescape(re.sub(r"<[^>]+>", "", html_text)))
+    text = html.unescape(re.sub(r"<[^>]+>", "", html_text))
+    return len(text.encode("utf-16-le")) // 2
 
 
 def normalize_url(raw: str) -> str | None:
-    """Turn what a user typed into a valid link, or None if it is not a link.
-
-    Accepts: https://site.com, site.com, www.site.com, t.me/name, @username
-    """
-    s = (raw or "").strip()
-    if not s or " " in s:
+    value = raw.strip()
+    if (
+        not value
+        or len(value) > 2048
+        or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
+    ):
         return None
-    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", s):
-        return "https://t.me/" + s[1:]
-    if s.lower().startswith("tg://"):
-        return s
-    if not re.match(r"^https?://", s, re.I):
-        s = "https://" + s
-    p = urlparse(s)
-    host = p.hostname or ""
-    if p.scheme.lower() not in ("http", "https") or "." not in host or host.startswith(".") or host.endswith("."):
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", value):
+        return "https://t.me/" + value[1:]
+    if "\\" in value:
         return None
-    return s
+    if "://" not in value:
+        value = "https://" + value
+    try:
+        parts = urlsplit(value)
+        if (
+            parts.scheme.lower() not in ("http", "https")
+            or parts.username
+            or parts.password
+        ):
+            return None
+        host = (parts.hostname or "").encode("idna").decode("ascii")
+        if len(host) > 253 or "." not in host:
+            return None
+        if any(
+            not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
+            for part in host.split(".")
+        ):
+            return None
+        port = parts.port
+        if port is not None and not 1 <= port <= 65535:
+            return None
+    except (ValueError, UnicodeError):
+        return None
+    netloc = host.lower() + (f":{port}" if port is not None else "")
+    return urlunsplit(
+        (parts.scheme.lower(), netloc, parts.path, parts.query, parts.fragment)
+    )
 
 
 @dataclass
 class Post:
-    media_type: str | None = None  # photo | video | animation | sticker | None
+    media_type: str | None = None
     file_id: str | None = None
-    emoji: str = ""  # HTML - emoji / short text sent in the first step
-    text: str = ""  # HTML - main text
-    buttons: list[dict[str, str]] = field(default_factory=list)  # {"text", "url", "color"}
-
-    # ------------------------------------------------------------ helpers
-    def body(self) -> str:
-        return "\n\n".join(p for p in (self.emoji.strip(), self.text.strip()) if p)
+    text: str = ""
+    buttons: list[dict[str, str]] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not self.file_id and not self.body() and not self.buttons
+        return not self.file_id and not self.text.strip() and not self.buttons
+
+    def validate(self) -> None:
+        if self.media_type not in (None, *MEDIA_NAMES) or bool(self.media_type) != bool(
+            self.file_id
+        ):
+            raise ValueError("Send a supported photo, video, GIF or sticker.")
+        if plain_len(self.text) > TEXT_LIMIT:
+            raise ValueError(
+                f"Text is too long. Use up to {TEXT_LIMIT} units; some symbols count as two."
+            )
+        if len(self.buttons) > MAX_BUTTONS:
+            raise ValueError(f"Use up to {MAX_BUTTONS} buttons per post.")
+        for button in self.buttons:
+            label = button.get("text", "")
+            if (
+                not label.strip()
+                or len(label.encode("utf-16-le")) // 2 > MAX_BUTTON_TEXT
+            ):
+                raise ValueError(
+                    f"Button names must be 1–{MAX_BUTTON_TEXT} units long."
+                )
+            if (
+                not normalize_url(button.get("url", ""))
+                or button.get("color") not in COLORS
+            ):
+                raise ValueError(
+                    "Use a valid HTTP or HTTPS button link and choose a colour."
+                )
 
     def keyboard(self) -> InlineKeyboardMarkup | None:
         if not self.buttons:
             return None
-        rows = [
-            [InlineKeyboardButton(b["text"], url=b["url"], style=COLORS.get(b.get("color"), (None, None))[1])]
-            for b in self.buttons
-        ]
-        return InlineKeyboardMarkup(rows)
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        b["text"], url=b["url"], style=COLORS[b["color"]][1]
+                    )
+                ]
+                for b in self.buttons
+            ]
+        )
 
-    # ------------------------------------------------------------ send
     async def send(self, bot: Bot, chat_id: int | str) -> Message | None:
-        body = self.body()
-        kb = self.keyboard()
-        html_mode = dict(parse_mode=ParseMode.HTML)
-
+        self.validate()
+        if self.is_empty():
+            return None
+        body, keyboard = self.text.strip(), self.keyboard()
         if self.media_type is None:
-            if not body and not kb:
-                return None
-            # Telegram needs some text to show buttons
-            return await bot.send_message(chat_id, body or "👇", reply_markup=kb, **html_mode)
-
+            return await bot.send_message(
+                chat_id,
+                body or "View details",
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
         if self.media_type == "sticker":
-            # Stickers can't have a caption -> sticker first, then text with buttons
             if not body:
-                return await bot.send_sticker(chat_id, self.file_id, reply_markup=kb)
+                return await bot.send_sticker(
+                    chat_id, self.file_id, reply_markup=keyboard
+                )
             await bot.send_sticker(chat_id, self.file_id)
-            return await bot.send_message(chat_id, body, reply_markup=kb, **html_mode)
-
-        sender = {
-            "photo": bot.send_photo,
-            "video": bot.send_video,
-            "animation": bot.send_animation,
-        }[self.media_type]
-
-        if plain_len(body) <= CAPTION_LIMIT:
-            return await sender(chat_id, self.file_id, caption=body or None, reply_markup=kb, **html_mode)
-        # Text too long for a caption -> media first, then the text with buttons
-        await sender(chat_id, self.file_id)
-        return await bot.send_message(chat_id, body, reply_markup=kb, **html_mode)
+        else:
+            sender = {
+                "photo": bot.send_photo,
+                "video": bot.send_video,
+                "animation": bot.send_animation,
+            }[self.media_type]
+            if plain_len(body) <= CAPTION_LIMIT:
+                return await sender(
+                    chat_id,
+                    self.file_id,
+                    caption=body or None,
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML,
+                )
+            await sender(chat_id, self.file_id)
+        return await bot.send_message(
+            chat_id, body, reply_markup=keyboard, parse_mode=ParseMode.HTML
+        )
 
 
 def extract_media(message: Message) -> tuple[str | None, str | None]:
-    """Return (media_type, file_id) for supported media, else (None, None)."""
-    if message.animation:  # check GIF before document/video
-        return "animation", message.animation.file_id
-    if message.sticker:
-        return "sticker", message.sticker.file_id
-    if message.photo:
-        return "photo", message.photo[-1].file_id
-    if message.video:
-        return "video", message.video.file_id
+    for kind in ("animation", "sticker", "photo", "video"):
+        media = getattr(message, kind, None)
+        if media:
+            return kind, media[-1].file_id if kind == "photo" else media.file_id
     return None, None
