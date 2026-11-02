@@ -1,86 +1,65 @@
-# 📢 Telegram Post Bot
+# ✨ Post Maker Bot
 
-A feature-rich Telegram bot for creating and publishing posts to channels/groups — with media, formatted text, inline URL buttons, scheduling and more. Built with [python-telegram-bot v21](https://python-telegram-bot.org/) and ready to deploy on **Render**.
+A super-simple Telegram bot that makes beautiful posts with **GIF, stickers, emojis, text** and **colourful buttons** 🌈 — so easy a kid can use it. Comes with a colourful **Mini App** and is ready for **Render**.
 
-## ✨ Features
+## 🎯 How it works (only a few taps)
 
-| Feature | Description |
-|---|---|
-| 📝 Rich content | Text, photo, video, GIF, document, audio — formatting (bold/italic/links/spoilers) preserved |
-| 🔘 Inline buttons | Multiple rows of URL buttons with a simple text syntax |
-| 👁 Preview | See exactly how the post will look before publishing |
-| 📢 Multi-channel | Add unlimited channels/groups; post to one or all at once |
-| ⏰ Scheduling | `18:30`, `2025-12-31 18:30`, `+30m`, `+2h`, `+1d` — survives restarts |
-| ⚙️ Options | No link preview · Silent · Protect content · Auto-pin |
-| 🔐 Admin lock | Restrict bot to specific user IDs via `ADMIN_IDS` |
-| 🩺 Health endpoint | `/health` for Render's web-service health checks |
+```
+✨ Create Post
+   └─ send a GIF / Sticker / Emoji (photo/video also OK)   → 👀 preview
+[📝 Add Text]  [🔘 Add Button]
+[✅ Done]
+   ├─ 📝 Add Text   → keyboard hides → type text            → 👀 preview
+   └─ 🔘 Add Button → keyboard hides → button name → link
+                    → [🔴 Red] [🟢 Green] [🔵 Blue]          → 👀 preview
+✅ Done → final post (forward it anywhere) → back to start
+```
+
+- After **every step** the bot sends the post as it looks so far.
+- Button colours use Telegram's native button styles (Bot API 9.4+).
+- Links can be typed loosely: `https://t.me/x`, `t.me/x`, `@username`, `example.com`.
+
+### 🎨 Mini App
+Tap **🎨 Mini App** → pick emojis, write text, add red/green/blue buttons with a live preview → **🚀 Send to Bot**. The bot sends the post back and you can still add a GIF/sticker or more text/buttons in chat.
 
 ## 🚀 Deploy on Render
 
-1. **Create a bot** with [@BotFather](https://t.me/BotFather) → copy the token.
-2. Push this repo to GitHub.
-3. On [Render](https://render.com) → **New → Web Service** → connect the repo.
-   - Render auto-detects `render.yaml` (Python, `python main.py`, health check `/health`).
-4. In **Environment** add:
+1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
+2. On [Render](https://render.com) → **New → Blueprint** (or Web Service) → connect this repo. `render.yaml` is detected automatically.
+3. Add the environment variable **`BOT_TOKEN`** = your token.
+4. Deploy. Logs show `Webhook mode: https://<app>.onrender.com/webhook` and `Bot started as @yourbot`.
 
-   | Key | Value |
-   |---|---|
-   | `BOT_TOKEN` | *(your BotFather token)* — **required** |
-   | `ADMIN_IDS` | `123456789,987654321` — optional, your Telegram user IDs |
-   | `TZ` | `Asia/Kolkata` — optional, timezone for scheduling |
-
-5. Deploy. Logs should show `Bot started as @yourbot`.
-
-> **Free tier note:** Render free web services sleep after 15 min of inactivity. Use an uptime pinger (e.g. UptimeRobot) hitting `https://<your-app>.onrender.com/health` every 5–10 min to keep it awake, or use a paid plan. Scheduled posts are stored in `data/` — attach a Render Disk at `/opt/render/project/src/data` (or set `DATA_DIR`) for persistence across deploys.
+That's it — no other settings needed:
+- Render sets `RENDER_EXTERNAL_URL` automatically → the bot uses a **webhook**, so a sleeping free instance **wakes up** when someone messages the bot (first reply may take ~30-50 s after sleep).
+- The Mini App is served at `https://<app>.onrender.com/app` and its button appears automatically.
 
 ## 🧑‍💻 Run locally
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env   # edit BOT_TOKEN
-export $(grep -v '^#' .env | xargs)
-python main.py
+export BOT_TOKEN=123456:ABC...
+python main.py          # polling mode (Mini App button hidden without a public https URL)
 ```
+Set `WEBHOOK_URL=https://your-public-url` to test webhook + Mini App locally (e.g. with a tunnel).
 
-## 📖 Usage
-
-1. **Add the bot as admin** in your channel (with *Post Messages* permission).
-2. `/addchannel` → forward any message from the channel (or send `@username` / `-100…` ID).
-3. `/newpost` → send your content (text or media with caption).
-4. Tap **🔘 Buttons** and send:
-   ```
-   Join Channel - https://t.me/example
-   Website - https://example.com | Contact - https://t.me/someone
-   ```
-   (one row per line, `|` separates buttons in the same row)
-5. Toggle options, tap **👁 Preview**, then **📤 Send Now** or **⏰ Schedule**.
-
-### Commands
-
-| Command | Action |
-|---|---|
-| `/newpost` | Start creating a post |
-| `/addchannel` | Add a channel/group |
-| `/channels` | List / remove channels |
-| `/scheduled` | List / cancel scheduled posts |
-| `/myid` | Show your user ID (for `ADMIN_IDS`) |
-| `/help` | Full instructions |
-| `/cancel` | Abort current action |
+Test the full flow offline (fake Telegram API):
+```bash
+python -m tests.test_flow
+```
 
 ## 🗂 Project structure
 
 ```
-├── main.py              # Entry: bot polling + aiohttp health server
+├── main.py            # web server: /health, /app (Mini App), /webhook  (+ polling fallback)
 ├── bot/
-│   ├── config.py        # Env-var config (BOT_TOKEN, ADMIN_IDS, PORT, TZ)
-│   ├── handlers.py      # Commands, editor UI, callbacks, scheduling
-│   ├── post.py          # Post model, button parser, send logic
-│   └── storage.py       # JSON persistence (channels, scheduled posts)
-├── render.yaml          # Render blueprint
-├── requirements.txt
-└── .env.example
+│   ├── config.py      # BOT_TOKEN, PORT, public URL
+│   ├── handlers.py    # the whole step-by-step flow + Mini App data
+│   └── post.py        # Post model, coloured buttons, sending logic
+├── webapp/index.html  # colourful Mini App
+├── tests/test_flow.py # end-to-end flow test
+├── render.yaml
+└── requirements.txt
 ```
 
 ## 📄 License
-
 MIT
