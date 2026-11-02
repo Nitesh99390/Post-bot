@@ -1,21 +1,40 @@
+"""Telegram handlers - one simple, kid-friendly flow.
+
+    ✨ Create Post
+        └─ send GIF / Sticker / Emoji / Photo           -> preview
+    [📝 Add Text] [🔘 Add Button] [✅ Done]
+        ├─ 📝 Add Text   -> keyboard hidden, type text   -> preview
+        └─ 🔘 Add Button -> keyboard hidden, button name -> link
+                         -> [🔴 Red] [🟢 Green] [🔵 Blue] -> preview
+    ✅ Done -> final post (ready to forward) + back to main menu
+
+The Mini App (🎨 Mini App) builds the same post in a colourful page and sends
+it back with Telegram.WebApp.sendData().
+"""
 from __future__ import annotations
 
 import html
+import json
 import logging
-from enum import StrEnum
 
-from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import (
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+    WebAppInfo,
+)
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from . import texts as T
+from .config import MINI_APP_URL
 from .post import (
     COLORS,
     MAX_BUTTON_TEXT,
     MAX_BUTTONS,
+    MEDIA_NAMES,
     TEXT_LIMIT,
-    Button,
     Post,
     extract_media,
     normalize_url,
@@ -24,392 +43,349 @@ from .post import (
 
 logger = logging.getLogger(__name__)
 
-K_POST, K_STATE, K_DRAFT, K_HISTORY = "post", "state", "draft", "history"
-HISTORY_LIMIT = 20
-COLOR_BY_LABEL = {label: key for key, (label, _) in COLORS.items()}
-STYLE_BY_LABEL = {label: key for key, (label, _, _) in T.STYLES.items()}
+# ---------------------------------------------------------------- labels
+BTN_CREATE = "✨ Create Post"
+BTN_MINI_APP = "🎨 Mini App"
+BTN_TEXT = "📝 Add Text"
+BTN_BUTTON = "🔘 Add Button"
+BTN_DONE = "✅ Done"
+COLOR_BY_LABEL = {label: key for key, (label, _style) in COLORS.items()}
+
+# ---------------------------------------------------------------- states
+K_POST, K_STATE, K_DRAFT = "post", "state", "draft_button"
+S_MEDIA = "media"  # waiting for GIF / sticker / emoji
+S_MENU = "menu"  # showing [Text] [Button] [Done]
+S_TEXT = "text"  # waiting for text
+S_BTN_NAME = "btn_name"
+S_BTN_LINK = "btn_link"
+S_BTN_COLOR = "btn_color"
 
 
-class State(StrEnum):
-    IDLE = "idle"
-    MEDIA = "media"
-    MENU = "menu"
-    TEXT = "text"
-    STYLE = "style"
-    BTN_NAME = "btn_name"
-    BTN_LINK = "btn_link"
-    BTN_COLOR = "btn_color"
+# ====================================================================== keyboards
+def main_keyboard() -> ReplyKeyboardMarkup:
+    row = [KeyboardButton(BTN_CREATE, style="success")]
+    if MINI_APP_URL:
+        row.append(KeyboardButton(BTN_MINI_APP, web_app=WebAppInfo(MINI_APP_URL), style="primary"))
+    return ReplyKeyboardMarkup([row], resize_keyboard=True, is_persistent=True)
 
 
-# ---------------------------------------------------------------- keyboards
-def kb_main() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[KeyboardButton(T.BTN_NEW, style="success"), KeyboardButton(T.BTN_HELP)]],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def kb_menu(post: Post, can_undo: bool) -> ReplyKeyboardMarkup:
-    row1 = [KeyboardButton(T.BTN_TEXT, style="primary")]
+def choice_keyboard(post: Post) -> ReplyKeyboardMarkup:
+    first = [KeyboardButton(BTN_TEXT, style="primary")]
     if len(post.buttons) < MAX_BUTTONS:
-        row1.append(KeyboardButton(T.BTN_BUTTON, style="primary"))
-    row2 = [KeyboardButton(T.BTN_DONE, style="success")]
-    if can_undo:
-        row2.insert(0, KeyboardButton(T.BTN_UNDO))
+        first.append(KeyboardButton(BTN_BUTTON, style="primary"))
     return ReplyKeyboardMarkup(
-        [row1, row2, [KeyboardButton(T.BTN_CANCEL, style="danger")]],
+        [first, [KeyboardButton(BTN_DONE, style="success")]],
         resize_keyboard=True,
-        input_field_placeholder="Choose an action",
+        input_field_placeholder="Choose what to add 👇",
     )
 
 
-def kb_cancel(skip: bool = False) -> ReplyKeyboardMarkup:
-    row = [KeyboardButton(T.BTN_CANCEL, style="danger")]
-    if skip:
-        row.insert(0, KeyboardButton(T.BTN_SKIP))
-    return ReplyKeyboardMarkup([row], resize_keyboard=True)
-
-
-def kb_colors() -> ReplyKeyboardMarkup:
+def color_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        [
-            [KeyboardButton(label, style=style) for label, style in COLORS.values()],
-            [KeyboardButton(T.BTN_CANCEL, style="danger")],
-        ],
+        [[KeyboardButton(label, style=style) for label, style in COLORS.values()]],
         resize_keyboard=True,
-        input_field_placeholder="Pick a colour",
+        one_time_keyboard=True,
+        input_field_placeholder="Pick a colour 🎨",
     )
 
 
-def kb_styles() -> ReplyKeyboardMarkup:
-    labels = [label for label, _, _ in T.STYLES.values()]
-    return ReplyKeyboardMarkup(
-        [labels[:3], labels[3:], [KeyboardButton(T.BTN_CANCEL, style="danger")]],
-        resize_keyboard=True,
-        input_field_placeholder="Pick a style",
-    )
+NO_KEYBOARD = ReplyKeyboardRemove()
 
 
-REMOVE = ReplyKeyboardRemove()
+# ====================================================================== helpers
+def get_post(context: ContextTypes.DEFAULT_TYPE) -> Post:
+    post = context.user_data.get(K_POST)
+    if not isinstance(post, Post):
+        post = Post()
+        context.user_data[K_POST] = post
+    return post
 
 
-# ---------------------------------------------------------------- session
-class Session:
-    __slots__ = ("data",)
-
-    def __init__(self, context: ContextTypes.DEFAULT_TYPE) -> None:
-        self.data = context.user_data
-
-    @property
-    def post(self) -> Post:
-        raw = self.data.get(K_POST)
-        if isinstance(raw, Post):
-            return raw
-        post = Post.from_dict(raw) if isinstance(raw, dict) else Post()
-        self.data[K_POST] = post
-        return post
-
-    @post.setter
-    def post(self, value: Post) -> None:
-        self.data[K_POST] = value
-
-    @property
-    def state(self) -> State:
-        try:
-            return State(self.data.get(K_STATE) or State.IDLE)
-        except ValueError:
-            return State.IDLE
-
-    @state.setter
-    def state(self, value: State) -> None:
-        self.data[K_STATE] = str(value)
-
-    @property
-    def draft(self) -> dict:
-        return self.data.setdefault(K_DRAFT, {})
-
-    @property
-    def history(self) -> list[dict]:
-        return self.data.setdefault(K_HISTORY, [])
-
-    def snapshot(self) -> None:
-        hist = self.history
-        hist.append(self.post.to_dict())
-        del hist[:-HISTORY_LIMIT]
-
-    def undo(self) -> bool:
-        hist = self.history
-        if not hist:
-            return False
-        self.post = Post.from_dict(hist.pop())
-        return True
-
-    def reset(self) -> None:
-        self.data[K_POST] = Post()
-        self.data[K_STATE] = str(State.IDLE)
-        self.data.pop(K_DRAFT, None)
-        self.data.pop(K_HISTORY, None)
+def set_state(context: ContextTypes.DEFAULT_TYPE, state: str | None) -> None:
+    context.user_data[K_STATE] = state
 
 
-async def reply(update: Update, text: str, markup=None, **kwargs) -> None:
-    await update.effective_message.reply_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=markup, disable_web_page_preview=True, **kwargs
-    )
+def reset(context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.user_data[K_POST] = Post()
+    context.user_data.pop(K_DRAFT, None)
+    set_state(context, None)
 
 
-async def show_preview(update: Update, s: Session) -> bool:
+async def show_preview(update: Update, context: ContextTypes.DEFAULT_TYPE, note: str = "") -> bool:
+    """Send the post built so far, then the [Text] [Button] [Done] keyboard.
+
+    Returns False if Telegram refused the post (e.g. a bad button link).
+    """
+    post = get_post(context)
     chat_id = update.effective_chat.id
-    bot = update.get_bot()
     try:
-        await s.post.send(bot, chat_id)
-    except BadRequest as e:
-        logger.info("Preview rejected: %s", e.message)
+        await post.send(context.bot, chat_id)
+    except TelegramError as e:
+        logger.info("Preview failed: %s", e)
         return False
-    s.state = State.MENU
-    await bot.send_message(
-        chat_id,
-        T.PREVIEW.format(summary=s.post.summary()),
-        parse_mode=ParseMode.HTML,
-        reply_markup=kb_menu(s.post, bool(s.history)),
-    )
+    set_state(context, S_MENU)
+    text = (note + "\n\n" if note else "") + "👆 <b>Your post so far</b>\nWhat do you want to add next?"
+    await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=choice_keyboard(post))
     return True
 
 
-# ---------------------------------------------------------------- commands
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Session(context).reset()
-    await reply(update, T.WELCOME.format(new=T.BTN_NEW), kb_main())
+# ====================================================================== commands / main buttons
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset(context)
+    name = html.escape(update.effective_user.first_name or "friend")
+    mini = f"\n🎨 Or tap <b>{BTN_MINI_APP}</b> to make it in a colourful app." if MINI_APP_URL else ""
+    await update.effective_message.reply_text(
+        f"👋 Hi <b>{name}</b>!\n\n"
+        "I make beautiful posts with <b>GIF, stickers, emojis, text</b> and "
+        "<b>colourful buttons</b> 🌈\n\n"
+        f"👇 Tap <b>{BTN_CREATE}</b> to start.{mini}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
 
 
-async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    s = Session(context)
-    await reply(update, T.HELP, kb_main() if s.state == State.IDLE else None)
+async def start_create(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset(context)
+    set_state(context, S_MEDIA)
+    await update.effective_message.reply_text(
+        "🎬 <b>Step 1</b>\n\nSend me a <b>GIF</b>, <b>Sticker</b> or <b>Emoji</b> 😍\n"
+        "<i>(a photo or video also works)</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=NO_KEYBOARD,
+    )
 
 
-async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    s = Session(context)
-    s.reset()
-    s.state = State.MEDIA
-    await reply(update, T.STEP_MEDIA, kb_cancel())
+async def ask_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    set_state(context, S_TEXT)
+    await update.effective_message.reply_text(
+        "✍️ Type your <b>text</b> and send it.", parse_mode=ParseMode.HTML, reply_markup=NO_KEYBOARD
+    )
 
 
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    Session(context).reset()
-    await reply(update, T.CANCELLED.format(new=T.BTN_NEW), kb_main())
-
-
-# ---------------------------------------------------------------- actions
-async def ask_text(update: Update, s: Session) -> None:
-    s.state = State.TEXT
-    await reply(update, T.ASK_TEXT, kb_cancel())
-
-
-async def ask_button(update: Update, s: Session) -> None:
-    if len(s.post.buttons) >= MAX_BUTTONS:
-        await reply(update, T.ERR_MAX_BUTTONS.format(max=MAX_BUTTONS), kb_menu(s.post, bool(s.history)))
+async def ask_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(get_post(context).buttons) >= MAX_BUTTONS:
+        await update.effective_message.reply_text(f"You already have {MAX_BUTTONS} buttons 🙂")
         return
-    s.state = State.BTN_NAME
-    s.data[K_DRAFT] = {}
-    await reply(update, T.ASK_BTN_NAME, kb_cancel())
+    set_state(context, S_BTN_NAME)
+    context.user_data[K_DRAFT] = {}
+    await update.effective_message.reply_text(
+        "🔘 What should the <b>button say</b>?\n<i>Example: Join Channel</i>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=NO_KEYBOARD,
+    )
 
 
-async def undo(update: Update, s: Session) -> None:
-    if not s.undo():
-        await reply(update, T.NOTHING_TO_UNDO, kb_menu(s.post, False))
-        return
-    if s.post.is_empty():
-        s.state = State.MEDIA
-        await reply(update, T.UNDONE, None)
-        await reply(update, T.STEP_MEDIA, kb_cancel())
-        return
-    await reply(update, T.UNDONE, REMOVE)
-    await show_preview(update, s)
-
-
-async def publish(update: Update, s: Session) -> None:
-    post = s.post
+async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    post = get_post(context)
+    msg = update.effective_message
     if post.is_empty():
-        s.reset()
-        await reply(update, T.ERR_EMPTY, kb_main())
+        await msg.reply_text("Your post is empty 🙈", reply_markup=main_keyboard())
+        reset(context)
         return
     try:
-        await post.send(update.get_bot(), update.effective_chat.id)
-    except BadRequest as e:
-        await reply(update, f"⚠️ {html.escape(e.message)}", kb_menu(post, bool(s.history)))
+        await post.send(context.bot, msg.chat_id)
+    except TelegramError as e:
+        await msg.reply_text(f"⚠️ Could not send the post: {html.escape(e.message)}")
         return
-    s.reset()
-    await reply(update, T.DONE.format(new=T.BTN_NEW), kb_main())
+    reset(context)
+    await msg.reply_text(
+        "🎉 <b>Your post is ready!</b>\n\nForward it to any channel or group. "
+        f"Tap <b>{BTN_CREATE}</b> to make another one.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
 
 
-def apply_media(update: Update, s: Session) -> bool:
-    media_type, file_id = extract_media(update.effective_message)
+# ====================================================================== message router
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    text = (msg.text or "").strip()
+    state = context.user_data.get(K_STATE)
+
+    # Main buttons work at any time
+    if text == BTN_CREATE:
+        return await start_create(update, context)
+    if text == BTN_MINI_APP:  # shown only if Mini App could not open
+        return await msg.reply_text("Please open the Mini App with the button below 👇", reply_markup=main_keyboard())
+
+    if state == S_MEDIA:
+        return await on_media_step(update, context)
+    if state == S_MENU:
+        return await on_menu_step(update, context)
+    if state == S_TEXT:
+        return await on_text_step(update, context)
+    if state == S_BTN_NAME:
+        return await on_button_name(update, context)
+    if state == S_BTN_LINK:
+        return await on_button_link(update, context)
+    if state == S_BTN_COLOR:
+        return await on_button_color(update, context)
+
+    await msg.reply_text(f"👇 Tap <b>{BTN_CREATE}</b> to start.", parse_mode=ParseMode.HTML, reply_markup=main_keyboard())
+
+
+def _set_media_from(msg, post: Post) -> bool:
+    media_type, file_id = extract_media(msg)
     if not media_type:
         return False
-    s.snapshot()
-    s.post.media_type, s.post.file_id = media_type, file_id
-    caption = update.effective_message.caption_html
-    if caption and not s.post.text:
-        s.post.text = caption
+    post.media_type, post.file_id = media_type, file_id
+    if msg.caption:
+        post.text = msg.caption_html
     return True
 
 
-# ---------------------------------------------------------------- state steps
-async def step_media(update: Update, s: Session) -> None:
-    msg = update.effective_message
-    if apply_media(update, s):
-        await show_preview(update, s)
+async def on_media_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg, post = update.effective_message, get_post(context)
+    if _set_media_from(msg, post):
+        await show_preview(update, context, f"✅ {MEDIA_NAMES[post.media_type]} added!")
         return
     if msg.text:
         if plain_len(msg.text_html) > TEXT_LIMIT:
-            await reply(update, T.ERR_TOO_LONG.format(limit=TEXT_LIMIT))
+            await msg.reply_text("😅 That is too long. Please send something shorter.")
             return
-        s.snapshot()
-        s.post.emoji = msg.text_html
-        await show_preview(update, s)
+        post.emoji = msg.text_html
+        await show_preview(update, context, "✅ Added!")
         return
-    await reply(update, T.ERR_NEED_MEDIA)
+    await msg.reply_text("Please send a GIF, sticker or emoji 🙂")
 
 
-async def step_menu(update: Update, s: Session) -> None:
-    text = (update.effective_message.text or "").strip()
-    if text == T.BTN_TEXT:
-        return await ask_text(update, s)
-    if text == T.BTN_BUTTON:
-        return await ask_button(update, s)
-    if text == T.BTN_UNDO:
-        return await undo(update, s)
-    if text == T.BTN_DONE:
-        return await publish(update, s)
-    if apply_media(update, s):
-        await show_preview(update, s)
+async def on_menu_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg, post = update.effective_message, get_post(context)
+    text = (msg.text or "").strip()
+    if text == BTN_TEXT:
+        return await ask_text(update, context)
+    if text == BTN_BUTTON:
+        return await ask_button(update, context)
+    if text == BTN_DONE:
+        return await finish(update, context)
+    # Sending a GIF / sticker here replaces the media (handy after the Mini App)
+    if _set_media_from(msg, post):
+        await show_preview(update, context, f"✅ {MEDIA_NAMES[post.media_type]} added!")
         return
-    await reply(update, T.ERR_PICK, kb_menu(s.post, bool(s.history)))
+    await msg.reply_text("👇 Please choose one of the buttons.", reply_markup=choice_keyboard(post))
 
 
-async def step_text(update: Update, s: Session) -> None:
-    msg = update.effective_message
+async def on_text_step(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg, post = update.effective_message, get_post(context)
     if not msg.text:
-        await reply(update, T.ERR_NEED_TEXT)
+        await msg.reply_text("✍️ Please type some text.")
         return
-    if plain_len(s.post.emoji) + plain_len(msg.text_html) > TEXT_LIMIT:
-        await reply(update, T.ERR_TOO_LONG.format(limit=TEXT_LIMIT))
+    new_text = msg.text_html
+    if plain_len(post.emoji) + plain_len(new_text) > TEXT_LIMIT:
+        await msg.reply_text(f"😅 Text is too long (max {TEXT_LIMIT} letters). Please send a shorter one.")
         return
-    s.draft["text"] = msg.text_html
-    s.state = State.STYLE
-    await reply(update, T.ASK_STYLE, kb_styles())
+    post.text = new_text
+    await show_preview(update, context, "✅ Text added!")
 
 
-async def step_style(update: Update, s: Session) -> None:
-    label = (update.effective_message.text or "").strip()
-    style = STYLE_BY_LABEL.get(label)
-    if style is None:
-        await reply(update, T.ERR_PICK, kb_styles())
-        return
-    raw = s.draft.get("text")
-    if not raw:
-        return await ask_text(update, s)
-    _, open_tag, close_tag = T.STYLES[style]
-    s.snapshot()
-    s.post.text = f"{open_tag}{raw}{close_tag}"
-    s.data.pop(K_DRAFT, None)
-    await show_preview(update, s)
-
-
-async def step_btn_name(update: Update, s: Session) -> None:
-    name = (update.effective_message.text or "").strip()
+async def on_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    name = (msg.text or "").strip()
     if not name:
-        await reply(update, T.ASK_BTN_NAME)
+        await msg.reply_text("Please type the button name 🙂")
         return
     if len(name) > MAX_BUTTON_TEXT:
-        await reply(update, T.ERR_TOO_LONG.format(limit=MAX_BUTTON_TEXT))
+        await msg.reply_text(f"Too long 😅 Max {MAX_BUTTON_TEXT} letters.")
         return
-    s.draft["name"] = name
-    s.state = State.BTN_LINK
-    await reply(update, T.ASK_BTN_LINK, kb_cancel())
+    context.user_data.setdefault(K_DRAFT, {})["text"] = name
+    set_state(context, S_BTN_LINK)
+    await msg.reply_text(
+        "🔗 Now send the <b>link</b> for this button.\n<i>Example: https://t.me/yourchannel</i>",
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
-async def step_btn_link(update: Update, s: Session) -> None:
-    url = normalize_url(update.effective_message.text or "")
+async def on_button_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    url = normalize_url(msg.text or "")
     if not url:
-        await reply(update, T.ERR_NOT_LINK)
+        await msg.reply_text(
+            "❌ That is not a link.\nSend it like: <code>https://t.me/yourchannel</code>",
+            parse_mode=ParseMode.HTML,
+        )
         return
-    s.draft["url"] = url
-    s.state = State.BTN_COLOR
-    await reply(update, T.ASK_BTN_COLOR, kb_colors())
+    context.user_data.setdefault(K_DRAFT, {})["url"] = url
+    set_state(context, S_BTN_COLOR)
+    await msg.reply_text("🎨 Choose the <b>button colour</b>:", parse_mode=ParseMode.HTML, reply_markup=color_keyboard())
 
 
-async def step_btn_color(update: Update, s: Session) -> None:
-    color = COLOR_BY_LABEL.get((update.effective_message.text or "").strip())
+async def on_button_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg, post = update.effective_message, get_post(context)
+    color = COLOR_BY_LABEL.get((msg.text or "").strip())
+    draft = context.user_data.get(K_DRAFT) or {}
     if not color:
-        await reply(update, T.ERR_PICK, kb_colors())
+        await msg.reply_text("👇 Tap a colour.", reply_markup=color_keyboard())
         return
-    draft = s.draft
-    if not draft.get("name") or not draft.get("url"):
-        return await ask_button(update, s)
-    s.snapshot()
-    s.post.buttons.append(Button(draft["name"], draft["url"], color))
-    if await show_preview(update, s):
-        s.data.pop(K_DRAFT, None)
+    if not draft.get("text") or not draft.get("url"):  # should not happen, start the button again
+        return await ask_button(update, context)
+    post.buttons.append({"text": draft["text"], "url": draft["url"], "color": color})
+    context.user_data.pop(K_DRAFT, None)
+    if not await show_preview(update, context, "✅ Button added!"):
+        post.buttons.pop()
+        set_state(context, S_BTN_LINK)
+        context.user_data[K_DRAFT] = {"text": draft["text"]}
+        await msg.reply_text(
+            "❌ Telegram did not accept that link. Please send a different link.",
+            reply_markup=NO_KEYBOARD,
+        )
+
+
+# ====================================================================== Mini App
+def post_from_webapp(raw: str) -> Post:
+    """Build a Post from the JSON the Mini App sends. Raises ValueError."""
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError("bad data")
+    post = Post(
+        emoji=html.escape(str(data.get("emoji") or "").strip())[:200],
+        text=html.escape(str(data.get("text") or "").strip())[:TEXT_LIMIT],
+    )
+    for b in (data.get("buttons") or [])[:MAX_BUTTONS]:
+        if not isinstance(b, dict):
+            continue
+        name = str(b.get("text") or "").strip()[:MAX_BUTTON_TEXT]
+        url = normalize_url(str(b.get("url") or ""))
+        color = b.get("color") if b.get("color") in COLORS else "blue"
+        if name and url:
+            post.buttons.append({"text": name, "url": url, "color": color})
+    return post
+
+
+async def on_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    try:
+        post = post_from_webapp(msg.web_app_data.data)
+    except (ValueError, TypeError):
+        await msg.reply_text("⚠️ Something went wrong with the Mini App. Please try again.", reply_markup=main_keyboard())
         return
-    s.post.buttons.pop()
-    s.history.pop()
-    draft.pop("url", None)
-    s.state = State.BTN_LINK
-    await reply(update, T.ERR_LINK_REJECTED, kb_cancel())
-
-
-STEPS = {
-    State.MEDIA: step_media,
-    State.MENU: step_menu,
-    State.TEXT: step_text,
-    State.STYLE: step_style,
-    State.BTN_NAME: step_btn_name,
-    State.BTN_LINK: step_btn_link,
-    State.BTN_COLOR: step_btn_color,
-}
-
-
-# ---------------------------------------------------------------- router
-async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    s = Session(context)
-    text = (update.effective_message.text or "").strip()
-
-    if text == T.BTN_NEW:
-        return await cmd_new(update, context)
-    if text == T.BTN_HELP:
-        return await cmd_help(update, context)
-    if text == T.BTN_CANCEL:
-        return await cmd_cancel(update, context)
-
-    handler = STEPS.get(s.state)
-    if handler is None:
-        await reply(update, T.IDLE.format(new=T.BTN_NEW), kb_main())
+    if post.is_empty():
+        await msg.reply_text("Your post is empty 🙈", reply_markup=main_keyboard())
         return
-    await handler(update, s)
+    context.user_data[K_POST] = post
+    context.user_data.pop(K_DRAFT, None)
+    ok = await show_preview(
+        update, context, "✅ Made in Mini App!\n🎬 Want a GIF or sticker? Just send it now."
+    )
+    if not ok:
+        post.buttons = []
+        await show_preview(update, context, "⚠️ A button link was not accepted, so buttons were removed.")
 
 
-async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    err = context.error
-    if isinstance(err, (NetworkError, TimedOut, RetryAfter)):
-        logger.warning("Transient Telegram error: %s", err)
-        return
-    if isinstance(err, Forbidden):
-        logger.info("Bot blocked by user: %s", err)
-        return
-    logger.error("Unhandled error", exc_info=err)
+# ====================================================================== errors
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Unhandled error", exc_info=context.error)
     if isinstance(update, Update) and update.effective_message:
         try:
-            await update.effective_message.reply_text(T.ERR_GENERIC, reply_markup=kb_main())
+            await update.effective_message.reply_text("⚠️ Oops! Something went wrong. Tap /start to try again.")
         except TelegramError:
             pass
 
 
+# ====================================================================== registration
 def register(app: Application) -> None:
     private = filters.ChatType.PRIVATE
-    app.add_handler(CommandHandler("start", cmd_start, private))
-    app.add_handler(CommandHandler("help", cmd_help, private))
-    app.add_handler(CommandHandler("new", cmd_new, private))
-    app.add_handler(CommandHandler("cancel", cmd_cancel, private))
-    app.add_handler(MessageHandler(private & ~filters.COMMAND & ~filters.StatusUpdate.ALL, on_message))
+    app.add_handler(CommandHandler(["start", "new", "cancel"], cmd_start, private))
+    app.add_handler(MessageHandler(private & filters.StatusUpdate.WEB_APP_DATA, on_web_app_data))
+    app.add_handler(MessageHandler(private & ~filters.COMMAND, on_message))
     app.add_error_handler(on_error)
