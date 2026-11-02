@@ -1,132 +1,120 @@
-"""Post data model + helpers for building keyboards and sending."""
+"""Post model: media + text + coloured URL buttons, and the logic to send it."""
 from __future__ import annotations
 
+import html
 import re
-from dataclasses import dataclass, field, asdict
-from typing import Any
+from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
-from telegram import (
-    Bot,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    Message,
-)
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
 
-# Button syntax (one row per line):
-#   Text - https://url.com | Text 2 - https://url2.com
-BUTTON_LINE_RE = re.compile(r"^\s*(.+?)\s*-\s*(https?://\S+|tg://\S+|t\.me/\S+)\s*$")
+# key -> (label shown to the user, Telegram Bot API button style)
+COLORS: dict[str, tuple[str, str]] = {
+    "red": ("🔴 Red", "danger"),
+    "green": ("🟢 Green", "success"),
+    "blue": ("🔵 Blue", "primary"),
+}
+
+MAX_BUTTONS = 10
+MAX_BUTTON_TEXT = 64
+CAPTION_LIMIT = 1024
+TEXT_LIMIT = 4000
+
+CAPTION_MEDIA = ("photo", "video", "animation")
+MEDIA_NAMES = {"photo": "Photo", "video": "Video", "animation": "GIF", "sticker": "Sticker"}
+
+
+def plain_len(html_text: str) -> int:
+    """Visible length of an HTML string (tags removed, entities decoded)."""
+    return len(html.unescape(re.sub(r"<[^>]+>", "", html_text)))
+
+
+def normalize_url(raw: str) -> str | None:
+    """Turn what a user typed into a valid link, or None if it is not a link.
+
+    Accepts: https://site.com, site.com, www.site.com, t.me/name, @username
+    """
+    s = (raw or "").strip()
+    if not s or " " in s:
+        return None
+    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", s):
+        return "https://t.me/" + s[1:]
+    if s.lower().startswith("tg://"):
+        return s
+    if not re.match(r"^https?://", s, re.I):
+        s = "https://" + s
+    p = urlparse(s)
+    host = p.hostname or ""
+    if p.scheme.lower() not in ("http", "https") or "." not in host or host.startswith(".") or host.endswith("."):
+        return None
+    return s
 
 
 @dataclass
 class Post:
-    media_type: str | None = None  # photo | video | animation | document | audio | None
+    media_type: str | None = None  # photo | video | animation | sticker | None
     file_id: str | None = None
-    text: str = ""
-    parse_mode: str = ParseMode.HTML
-    buttons: list[list[dict[str, str]]] = field(default_factory=list)
-    disable_preview: bool = False
-    protect_content: bool = False
-    silent: bool = False
-    pin: bool = False
+    emoji: str = ""  # HTML - emoji / short text sent in the first step
+    text: str = ""  # HTML - main text
+    buttons: list[dict[str, str]] = field(default_factory=list)  # {"text", "url", "color"}
 
-    # ---------------------------------------------------------------- utils
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Post":
-        return cls(**d)
+    # ------------------------------------------------------------ helpers
+    def body(self) -> str:
+        return "\n\n".join(p for p in (self.emoji.strip(), self.text.strip()) if p)
 
     def is_empty(self) -> bool:
-        return not self.text and not self.file_id
+        return not self.file_id and not self.body() and not self.buttons
 
     def keyboard(self) -> InlineKeyboardMarkup | None:
         if not self.buttons:
             return None
         rows = [
-            [InlineKeyboardButton(b["text"], url=b["url"]) for b in row]
-            for row in self.buttons
+            [InlineKeyboardButton(b["text"], url=b["url"], style=COLORS.get(b.get("color"), (None, None))[1])]
+            for b in self.buttons
         ]
         return InlineKeyboardMarkup(rows)
 
-    # ---------------------------------------------------------------- send
-    async def send(self, bot: Bot, chat_id: int | str) -> Message:
+    # ------------------------------------------------------------ send
+    async def send(self, bot: Bot, chat_id: int | str) -> Message | None:
+        body = self.body()
         kb = self.keyboard()
-        common = dict(
-            chat_id=chat_id,
-            reply_markup=kb,
-            disable_notification=self.silent,
-            protect_content=self.protect_content,
-        )
+        html_mode = dict(parse_mode=ParseMode.HTML)
+
         if self.media_type is None:
-            msg = await bot.send_message(
-                text=self.text or " ",
-                parse_mode=self.parse_mode,
-                disable_web_page_preview=self.disable_preview,
-                **common,
-            )
-        else:
-            caption = self.text or None
-            sender = {
-                "photo": bot.send_photo,
-                "video": bot.send_video,
-                "animation": bot.send_animation,
-                "document": bot.send_document,
-                "audio": bot.send_audio,
-            }[self.media_type]
-            kwargs = {self.media_type: self.file_id}
-            msg = await sender(caption=caption, parse_mode=self.parse_mode, **kwargs, **common)
+            if not body and not kb:
+                return None
+            # Telegram needs some text to show buttons
+            return await bot.send_message(chat_id, body or "👇", reply_markup=kb, **html_mode)
 
-        if self.pin:
-            try:
-                await bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True)
-            except Exception:  # noqa: BLE001 - pinning is best-effort
-                pass
-        return msg
+        if self.media_type == "sticker":
+            # Stickers can't have a caption -> sticker first, then text with buttons
+            if not body:
+                return await bot.send_sticker(chat_id, self.file_id, reply_markup=kb)
+            await bot.send_sticker(chat_id, self.file_id)
+            return await bot.send_message(chat_id, body, reply_markup=kb, **html_mode)
 
+        sender = {
+            "photo": bot.send_photo,
+            "video": bot.send_video,
+            "animation": bot.send_animation,
+        }[self.media_type]
 
-def parse_buttons(raw: str) -> list[list[dict[str, str]]]:
-    """Parse button text into rows. Raises ValueError on bad syntax."""
-    rows: list[list[dict[str, str]]] = []
-    for line in raw.strip().splitlines():
-        if not line.strip():
-            continue
-        row: list[dict[str, str]] = []
-        for part in line.split("|"):
-            m = BUTTON_LINE_RE.match(part)
-            if not m:
-                raise ValueError(f"Invalid button: <code>{part.strip()}</code>")
-            text, url = m.group(1), m.group(2)
-            if url.startswith("t.me/"):
-                url = "https://" + url
-            row.append({"text": text, "url": url})
-        if row:
-            rows.append(row)
-    if not rows:
-        raise ValueError("No buttons found.")
-    return rows
+        if plain_len(body) <= CAPTION_LIMIT:
+            return await sender(chat_id, self.file_id, caption=body or None, reply_markup=kb, **html_mode)
+        # Text too long for a caption -> media first, then the text with buttons
+        await sender(chat_id, self.file_id)
+        return await bot.send_message(chat_id, body, reply_markup=kb, **html_mode)
 
 
 def extract_media(message: Message) -> tuple[str | None, str | None]:
-    """Return (media_type, file_id) for a message, or (None, None)."""
+    """Return (media_type, file_id) for supported media, else (None, None)."""
+    if message.animation:  # check GIF before document/video
+        return "animation", message.animation.file_id
+    if message.sticker:
+        return "sticker", message.sticker.file_id
     if message.photo:
         return "photo", message.photo[-1].file_id
     if message.video:
         return "video", message.video.file_id
-    if message.animation:
-        return "animation", message.animation.file_id
-    if message.document:
-        return "document", message.document.file_id
-    if message.audio:
-        return "audio", message.audio.file_id
     return None, None
-
-
-def message_html(message: Message) -> str:
-    """Get text/caption from a message preserving formatting as HTML."""
-    if message.text:
-        return message.text_html or message.text
-    if message.caption:
-        return message.caption_html or message.caption
-    return ""
