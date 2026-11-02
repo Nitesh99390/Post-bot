@@ -3,7 +3,3 @@ __pycache__/
 .env
 venv/
 .venv/
-data/
-*.pickle
-.pytest_cache/
-.ruff_cache/
