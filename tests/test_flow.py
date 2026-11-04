@@ -9,18 +9,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 from telegram import Update
-from telegram.error import BadRequest, NetworkError, RetryAfter
+from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 from telegram.ext import Application
 from telegram.request import BaseRequest
 
 from bot import config
 from bot import handlers as h
+from bot.store import MAX_SAVED_POSTS, MemoryStore, StoreError
 from bot.post import (
     CAPTION_LIMIT,
     MAX_BUTTONS,
     TEXT_LIMIT,
     Post,
     normalize_url,
+    parse_quick_buttons,
     plain_len,
 )
 from main import build_web_app, run
@@ -142,6 +144,9 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
             data["message"]["from"] = {**USER, "id": user_id}
         await self.app.process_update(Update.de_json(data, self.app.bot))
         return list(self.transport.calls)
+
+    def store(self):
+        return self.app.bot_data["store"]
 
     def post(self, user_id=42):
         return self.app.user_data[user_id][h.K_POST]
@@ -297,7 +302,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unsupported_media_and_empty_preview(self):
         await self.send("/preview")
-        calls = await self.send(document={"file_id": "D1", "file_unique_id": "d"})
+        calls = await self.send(location={"latitude": 1.0, "longitude": 2.0})
         self.assertIn("Send text", calls[-1][1]["text"])
         self.assertTrue(self.post().is_empty())
         await self.send("/back")
@@ -348,6 +353,191 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         await self.send(h.BTN_REMOVE)
         self.assertEqual(self.post().buttons, [])
 
+    async def test_first_message_resets_stale_profile_menu_button(self):
+        calls = await self.send("/start")
+        menu = [c for c in calls if c[0] == "setChatMenuButton"]
+        self.assertEqual(len(menu), 1)
+        self.assertEqual(str(menu[0][1]["chat_id"]), "42")
+        self.assertEqual(menu[0][1]["menu_button"]["type"], "commands")
+        calls = await self.send("/help")
+        self.assertNotIn("setChatMenuButton", [c[0] for c in calls])
+        self.assertNotIn("My profile", json.dumps(calls))
+
+    async def test_keyboards_keep_the_same_buttons(self):
+        await self.draft()
+        calls = await self.add_button()
+        self.assertEqual(
+            keyboard(calls[-1]),
+            [[h.BTN_TEXT, h.BTN_BUTTON], [h.BTN_PREVIEW, h.BTN_DONE], [h.BTN_REMOVE]],
+        )
+
+    async def test_old_plain_labels_still_work(self):
+        await self.draft()
+        await self.send("Add Button")
+        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_NAME)
+        await self.send("Join")
+        await self.send("@mychannel")
+        await self.send("green")
+        self.assertEqual(self.post().buttons[0]["color"], "green")
+
+    async def test_quick_multi_button_entry(self):
+        await self.draft()
+        await self.send(h.BTN_BUTTON)
+        calls = await self.send("Join Channel - @mychannel\nWebsite | example.com")
+        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_COLOR)
+        self.assertIn("Join Channel", calls[-1][1]["text"])
+        await self.send("🔴 Red")
+        self.assertEqual(
+            self.post().buttons,
+            [
+                {"text": "Join Channel", "url": "https://t.me/mychannel", "color": "red"},
+                {"text": "Website", "url": "https://example.com", "color": "red"},
+            ],
+        )
+
+    async def test_quick_button_from_editor_menu(self):
+        await self.draft()
+        await self.send("Shop - example.com/shop")
+        await self.send("Blue")
+        self.assertEqual(self.post().buttons[0]["url"], "https://example.com/shop")
+
+    async def test_forwarded_post_imports_buttons(self):
+        await self.send("/new")
+        await self.send(
+            text="Big sale",
+            reply_markup={
+                "inline_keyboard": [
+                    [{"text": "Buy", "url": "https://example.com", "style": "success"}],
+                    [{"text": "Cb", "callback_data": "x"}],
+                ]
+            },
+        )
+        self.assertEqual(
+            self.post().buttons,
+            [{"text": "Buy", "url": "https://example.com", "color": "green"}],
+        )
+
+    async def test_new_media_types(self):
+        for kind, payload, method in (
+            ("document", {"file_id": "D1", "file_unique_id": "d"}, "sendDocument"),
+            ("voice", {"file_id": "V1", "file_unique_id": "v", "duration": 1}, "sendVoice"),
+            ("audio", {"file_id": "A1", "file_unique_id": "a", "duration": 1}, "sendAudio"),
+        ):
+            with self.subTest(kind=kind):
+                calls = await self.draft(**{kind: payload, "caption": "Hi"})
+                self.assertEqual(calls[0][0], method)
+                self.assertEqual(calls[0][1]["caption"], "Hi")
+        calls = await self.draft(
+            video_note={"file_id": "N1", "file_unique_id": "n", "length": 1, "duration": 1}
+        )
+        self.assertEqual(calls[0][0], "sendVideoNote")
+
+    async def test_save_list_open_delete_templates(self):
+        await self.draft(text="Promo text")
+        await self.add_button()
+        calls = await self.send("/save Promo")
+        self.assertIn("Promo</b> saved", calls[-1][1]["text"])
+        post_id = next(iter(self.store().posts))
+        calls = await self.send("/save Promo")
+        self.assertIn("updated", calls[-1][1]["text"])
+        self.assertEqual(len(self.store().posts), 1)
+        await self.send("/cancel")
+        calls = await self.send("/posts")
+        self.assertIn(f"/open_{post_id}", calls[-1][1]["text"])
+        calls = await self.send(f"/open_{post_id}")
+        self.assertEqual(calls[0][1]["text"], "Promo text")
+        self.assertEqual(len(self.post().buttons), 1)
+        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MENU)
+        # Other users cannot open or delete it.
+        calls = await self.send(f"/open_{post_id}", user_id=77)
+        self.assertIn("doesn't exist", calls[-1][1]["text"])
+        calls = await self.send(f"/del_{post_id}", user_id=77)
+        self.assertIn("doesn't exist", calls[-1][1]["text"])
+        calls = await self.send(f"/del_{post_id}")
+        self.assertIn("deleted", calls[-1][1]["text"])
+        self.assertEqual(self.store().posts, {})
+
+    async def test_save_requires_draft_and_respects_limit(self):
+        calls = await self.send("/save")
+        self.assertIn("Nothing to save", calls[-1][1]["text"])
+        await self.draft(text="First line\nmore")
+        await self.send("/save")
+        self.assertEqual(next(iter(self.store().posts.values()))["name"], "First line")
+        for i in range(MAX_SAVED_POSTS - 1):
+            await self.store().save_post(42, f"t{i}", self.post().to_dict())
+        calls = await self.send("/save another")
+        self.assertIn("Delete one", calls[-1][1]["text"])
+
+    async def test_storage_failure_keeps_draft(self):
+        await self.draft()
+        self.store().save_post = AsyncMock(side_effect=StoreError("network"))
+        calls = await self.send("/save x")
+        self.assertIn("Saving failed", calls[-1][1]["text"])
+        self.assertEqual(self.post().text, "Original")
+
+    async def test_finish_counts_posts_and_stats(self):
+        await self.draft()
+        calls = await self.send(h.BTN_DONE)
+        self.assertIn("post <b>#1</b>", calls[-1][1]["text"])
+        calls = await self.send("/stats")
+        self.assertIn("Posts created: <b>1</b>", calls[-1][1]["text"])
+        calls = await self.send("/start")
+        self.assertIn("Posts created: <b>1</b>", calls[-1][1]["text"])
+
+    async def test_session_is_persisted_and_restored(self):
+        await self.draft(text="Survives restart")
+        self.assertEqual(
+            self.store().sessions[42]["post"]["text"], "Survives restart"
+        )
+        # Simulate a restart: fresh in-memory state, same store.
+        store = self.store()
+        self.app.user_data[42].clear()
+        self.app.bot_data.clear()
+        self.app.bot_data["store"] = store
+        await self.send("/back")
+        self.assertEqual(self.post().text, "Survives restart")
+        await self.send("/cancel")
+        self.assertNotIn(42, store.sessions)
+
+    async def test_link_preview_toggle(self):
+        await self.draft(text="https://example.com")
+        calls = await self.send("/linkpreview")
+        sent = [c for c in calls if c[0] == "sendMessage" and c[1]["text"] == "https://example.com"]
+        self.assertTrue(sent[0][1]["link_preview_options"]["is_disabled"])
+        self.assertFalse(self.post().link_preview)
+
+    async def test_channel_and_publish(self):
+        calls = await self.send("/publish")
+        self.assertIn("Nothing to publish", calls[-1][1]["text"])
+        await self.draft()
+        calls = await self.send("/publish")
+        self.assertIn("No channel set", calls[-1][1]["text"])
+        self.assertEqual(self.post().text, "Original")
+        await self.store().update_profile(42, default_channel="@mychannel")
+        calls = await self.send("/publish")
+        self.assertEqual(calls[0][0], "sendMessage")
+        self.assertEqual(calls[0][1]["chat_id"], "@mychannel")
+        self.assertIn("t.me/mychannel/", calls[-1][1]["text"])
+        self.assertNotIn(h.K_POST, self.app.user_data[42])
+
+    async def test_publish_failure_keeps_draft(self):
+        await self.draft()
+        self.transport.failure = Forbidden("not admin")
+        calls = await self.send("/publish @mychannel")
+        self.assertIn("admin", calls[-1][1]["text"])
+        self.assertEqual(self.post().text, "Original")
+
+    async def test_channel_command_validation(self):
+        calls = await self.send("/channel")
+        self.assertIn("No channel set", calls[-1][1]["text"])
+        calls = await self.send("/channel not a channel")
+        self.assertIn("Use a channel", calls[-1][1]["text"])
+        self.transport.failure = BadRequest("chat not found")
+        await self.send("/channel @missing_chan")
+        self.assertIsNone((await self.store().get_profile(42)).get("default_channel"))
+        await self.send("/channel off")
+        self.assertIsNone((await self.store().get_profile(42)).get("default_channel"))
+
 
 class ValidationTests(unittest.TestCase):
     def test_url_normalization(self):
@@ -386,6 +576,30 @@ class ValidationTests(unittest.TestCase):
         for raw in values:
             with self.subTest(raw=raw):
                 self.assertIsNone(normalize_url(raw))
+
+    def test_quick_button_parsing(self):
+        self.assertEqual(
+            parse_quick_buttons("A - example.com\nB | @chan_name"),
+            [
+                {"text": "A", "url": "https://example.com"},
+                {"text": "B", "url": "https://t.me/chan_name"},
+            ],
+        )
+        for raw in ("Just text", "A - example.com\nnot a button", "", "A - nope"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(parse_quick_buttons(raw))
+
+    def test_post_roundtrip(self):
+        post = Post(
+            media_type="photo",
+            file_id="P",
+            text="<b>x</b>",
+            buttons=[{"text": "A", "url": "https://a.com", "color": "red"}],
+            link_preview=False,
+        )
+        self.assertEqual(Post.from_dict(post.to_dict()), post)
+        for bad in (None, [], {"media_type": "bad", "file_id": "x"}, {"buttons": [{}]}):
+            self.assertIsNone(Post.from_dict(bad))
 
     def test_utf16_and_escaped_html_length(self):
         self.assertEqual(plain_len("<b>A</b>&amp;\U0001f600"), 4)
@@ -540,6 +754,68 @@ class WebhookTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.request(app=polling_app)).status, 404)
 
 
+class SupabaseStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def make(self, handler):
+        import httpx
+
+        from bot.store import SupabaseStore
+
+        store = SupabaseStore("https://x.supabase.co", "sb_publishable_test")
+        await store._client.aclose()
+        store._client = httpx.AsyncClient(
+            base_url="https://x.supabase.co/rest/v1",
+            headers={"apikey": "sb_publishable_test"},
+            transport=httpx.MockTransport(handler),
+        )
+        return store
+
+    async def test_missing_tables_fall_back_to_memory(self):
+        import httpx
+
+        from bot import store as store_module
+
+        def handler(request):
+            return httpx.Response(404, json={"message": "Could not find the table"})
+
+        original = store_module.SupabaseStore
+        made = await self.make(handler)
+        with patch.object(store_module, "SupabaseStore", return_value=made):
+            result = await store_module.create_store("https://x.supabase.co", "k")
+        self.assertIsInstance(result, MemoryStore)
+        self.assertIs(store_module.SupabaseStore, original)
+
+    async def test_requests_are_scoped_and_upserted(self):
+        import httpx
+
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            if request.method == "GET" and request.url.path.endswith("/saved_posts"):
+                return httpx.Response(200, json=[])
+            if request.method == "POST" and request.url.path.endswith("/saved_posts"):
+                return httpx.Response(201, json=[{"id": 9}])
+            return httpx.Response(201)
+
+        store = await self.make(handler)
+        await store.save_session(42, {"state": "menu"})
+        upsert = seen[-1]
+        self.assertEqual(upsert.url.params["on_conflict"], "user_id")
+        self.assertIn("merge-duplicates", upsert.headers["Prefer"])
+        self.assertEqual(json.loads(upsert.content)["user_id"], 42)
+        self.assertEqual(await store.save_post(42, "Promo", {"text": "x"}), (9, False))
+        self.assertTrue(all(r.url.params.get("user_id", "eq.42") == "eq.42" for r in seen))
+        await store.close()
+
+    async def test_http_errors_raise_store_error(self):
+        import httpx
+
+        store = await self.make(lambda request: httpx.Response(500, json={"message": "boom"}))
+        with self.assertRaises(StoreError):
+            await store.load_session(1)
+        await store.close()
+
+
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     async def exercise(self, webhook=True, fail=False):
         application = MagicMock()
@@ -596,6 +872,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 BOT_TOKEN="123:TEST",
                 PORT="10000",
                 BASE_URL="https://example.com" if webhook else "",
+                STORAGE_ENABLED=False,
             ),
             patch("main.Application.builder", return_value=builder),
             patch("main.web.AppRunner", return_value=runner),
