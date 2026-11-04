@@ -13,7 +13,8 @@ from telegram.error import TelegramError
 from telegram.ext import Application
 
 from bot import config
-from bot.handlers import register
+from bot.handlers import COMMANDS, register
+from bot.store import create_store
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -105,6 +106,10 @@ async def run() -> None:
         .build()
     )
     register(application)
+    store = await create_store(
+        config.SUPABASE_URL, config.SUPABASE_KEY, config.STORAGE_ENABLED
+    )
+    application.bot_data["store"] = store
     runner = web.AppRunner(build_web_app(application), access_log=None)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -116,14 +121,7 @@ async def run() -> None:
         async with application:
             try:
                 await application.bot.set_my_commands(
-                    [
-                        BotCommand("start", "Open Post Maker"),
-                        BotCommand("new", "Create a new post"),
-                        BotCommand("preview", "Preview your draft"),
-                        BotCommand("back", "Return to your draft"),
-                        BotCommand("cancel", "Discard your draft"),
-                        BotCommand("help", "Quick guide"),
-                    ]
+                    [BotCommand(name, about) for name, _, about in COMMANDS]
                 )
                 await application.bot.set_chat_menu_button(
                     menu_button=MenuButtonCommands()
@@ -154,6 +152,7 @@ async def run() -> None:
                     await application.stop()
     finally:
         await runner.cleanup()
+        await store.close()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)
 

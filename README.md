@@ -1,6 +1,6 @@
 # Post Maker Bot
 
-A focused Telegram bot for composing text, photos, videos, GIFs and stickers with styled link buttons. No frontend or separate app; everything happens in private chat.
+A focused Telegram bot for composing text, photos, videos, GIFs, stickers, audio, voice notes, video messages and files with coloured link buttons. No Mini App or frontend; everything happens in private chat. Drafts, saved templates and stats are stored in **Supabase**.
 
 ## Workflow
 
@@ -9,6 +9,20 @@ A focused Telegram bot for composing text, photos, videos, GIFs and stickers wit
 3. Choose **Finish** and forward the result to a channel or group.
 
 Text formatting is preserved. Telegram controls the chat font; headings use native bold and italic rather than decorative Unicode. Buttons support blue, green and red styles on compatible Telegram clients.
+
+The keyboard stays small: **Create Post**, then **Edit Text / Add Button / Preview / Finish** (and **Remove Last Button** once a button exists). Extra features use commands and smart input instead of extra buttons:
+
+| Feature | How |
+|---|---|
+| Save a template | `/save name` (name defaults to the first line) |
+| Saved posts | `/posts`, then `/open_ID` or `/del_ID` (up to 30) |
+| Publish directly | `/channel @name` once (bot must be admin), then `/publish` or `/publish @other` |
+| Link preview | `/linkpreview` toggles it for the draft |
+| Stats | `/stats` and the `/start` screen show posts created and saved templates |
+| Copy a post | Forward any post while creating; its URL buttons are imported |
+| Several buttons at once | In Add Button (or straight from the editor) send `Label - link` lines, e.g. `Join - @mychannel` and `Site \| example.com` |
+
+Old per-chat **My profile** Mini App menu buttons are reset to the native command menu automatically the first time each user messages the bot after a restart.
 
 `/new` starts a fresh post, `/back` leaves the current step without discarding the post, `/preview` shows the draft, `/cancel` discards it, and `/help` explains the flow. **Remove Last Button** lets you undo a button, including a link rejected by Telegram. Edit Text replaces the full text. Sending media from the editor replaces the media and uses its caption, if supplied.
 
@@ -24,13 +38,20 @@ python main.py
 
 Environment variables are read from the process; `.env` files are not loaded automatically. Without a public URL the bot uses polling. Set `WEBHOOK_URL` to a public HTTPS base URL to use webhooks. `PORT` defaults to 10000.
 
+## Supabase
+
+1. Open the Supabase dashboard → **SQL Editor**, paste `supabase/migrations/20261104000000_post_bot.sql` and click **Run** (safe to re-run). It creates `bot_users`, `bot_sessions` and `saved_posts` with Row Level Security enabled.
+2. That's it: the project URL and publishable key are defaults in `bot/config.py`. Override them with `SUPABASE_URL` / `SUPABASE_KEY`. For tighter security, set `SUPABASE_KEY` to a `sb_secret_…` key on Render and run the optional "harden" block at the end of the SQL file.
+
+If the tables are missing or Supabase is unreachable at startup, the bot logs a warning and uses in-memory storage so it keeps working. Storage errors during use never discard a draft. `STORAGE=memory` disables Supabase.
+
 ## Render
 
 Connect this repository as a Blueprint and set `BOT_TOKEN`. The existing `render.yaml` configures the Python service and health check. Render supplies `RENDER_EXTERNAL_URL` automatically. Run only one service instance per bot token.
 
 Only `/`, `/health` and (in webhook mode) `/webhook` are served. Health returns 503 until the application starts. Webhooks use a token-derived secret, a 256 KiB body limit, validation, a bounded queue and recent-update deduplication. Saturation returns 503 so Telegram can retry. Pending updates are not deliberately dropped on startup. The Telegram menu button is reset to native commands.
 
-Drafts, queued updates and the recent-update cache are held in memory, not a database. Restarting loses them; deduplication is not an exactly-once delivery guarantee. Delivery failures retain the draft while the process is running. Ambiguous network failures are not automatically resent: check the chat before retrying. Free Render instances can sleep and have a cold-start delay. Previously configured BotFather profile/launch buttons and chat-specific menu overrides must be removed separately in Telegram if present.
+With Supabase, drafts (including the current step), templates and stats survive restarts and redeploys. Queued updates and the recent-update cache are held in memory; restarting loses them; deduplication is not an exactly-once delivery guarantee. Delivery failures retain the draft while the process is running. Ambiguous network failures are not automatically resent: check the chat before retrying. Free Render instances can sleep and have a cold-start delay. Previously configured BotFather profile/launch buttons and chat-specific menu overrides must be removed separately in Telegram if present.
 
 ## Tests
 
@@ -38,4 +59,4 @@ Drafts, queued updates and the recent-update cache are held in memory, not a dat
 python -m unittest discover -s tests -v
 ```
 
-Tests use a fake Telegram transport. No real token or outbound Telegram calls are required.
+Tests use a fake Telegram transport, an in-memory store and a mocked Supabase HTTP transport. No real token, database or outbound calls are required.
