@@ -1,117 +1,189 @@
-#!/usr/bin/env python3
-"""Post Maker Bot - entry point.
+"""Post Maker: Telegram bot + Mini App server (static app, JSON API, webhook)."""
 
-One small aiohttp web server does everything:
-  GET  /           -> health check (Render)
-  GET  /health     -> health check (Render)
-  GET  /app        -> the colourful Mini App
-  POST /webhook    -> Telegram updates (only when a public URL is known)
-
-On Render (RENDER_EXTERNAL_URL is set automatically) the bot uses a webhook, so
-a sleeping free instance wakes up as soon as someone messages the bot.
-Locally (no public URL) it falls back to long polling.
-"""
 import asyncio
+import hmac
+import json
 import logging
-import os
 import signal
 import sys
+from collections import OrderedDict
 
 from aiohttp import web
-from telegram import BotCommand, Update
+from telegram import BotCommand, MenuButtonCommands, Update
+from telegram.error import TelegramError
 from telegram.ext import Application
 
 from bot import config
-from bot.handlers import register
+from bot.api import Services, add_routes
+from bot.handlers import COMMANDS, menu_button, register
+from bot.store import create_store
+
+WEBHOOK_MAX_BODY = 256 * 1024
+ALLOWED_UPDATES = ["message", "my_chat_member"]
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     level=logging.INFO,
     stream=sys.stdout,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logger = logging.getLogger("main")
-
-WEBAPP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webapp", "index.html")
+logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------- web server
-def build_web_app(application: Application) -> web.Application:
+def build_web_app(
+    application: Application, services: Services | None = None
+) -> web.Application:
+    recent: OrderedDict[int, None] = OrderedDict()
+
     async def health(_request: web.Request) -> web.Response:
-        return web.json_response({"status": "ok", "service": "post-maker-bot"})
-
-    async def mini_app(_request: web.Request) -> web.FileResponse:
-        return web.FileResponse(WEBAPP_FILE, headers={"Cache-Control": "no-cache"})
+        ready = application.running
+        return web.json_response(
+            {"status": "ok" if ready else "starting", "service": "post-maker-bot"},
+            status=200 if ready else 503,
+        )
 
     async def webhook(request: web.Request) -> web.Response:
-        if request.headers.get("X-Telegram-Bot-Api-Secret-Token") != config.WEBHOOK_SECRET:
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if not hmac.compare_digest(secret.encode(), config.WEBHOOK_SECRET.encode()):
             return web.Response(status=403)
+        if not application.running:
+            return web.Response(status=503, headers={"Retry-After": "5"})
         try:
-            data = await request.json()
-        except Exception:  # noqa: BLE001 - bad body, ignore
+            raw = await request.read()
+            if len(raw) > WEBHOOK_MAX_BODY:
+                return web.Response(status=413)
+            data = json.loads(raw)
+            if (
+                not isinstance(data, dict)
+                or type(data.get("update_id")) is not int
+                or data["update_id"] < 0
+            ):
+                return web.Response(status=400)
+            if isinstance(data.get("my_chat_member"), dict):
+                change = data["my_chat_member"]
+                chat, sender = change.get("chat"), change.get("from")
+                if (
+                    type(change.get("date")) is not int
+                    or not isinstance(chat, dict)
+                    or type(chat.get("id")) is not int
+                    or not isinstance(sender, dict)
+                    or type(sender.get("id")) is not int
+                    or not isinstance(change.get("new_chat_member"), dict)
+                    or not isinstance(change.get("old_chat_member"), dict)
+                ):
+                    return web.Response(status=400)
+            else:
+                message = data.get("message")
+                if not isinstance(message, dict):
+                    return web.Response(status=400)
+                chat, sender = message.get("chat"), message.get("from")
+                if (
+                    type(message.get("message_id")) is not int
+                    or type(message.get("date")) is not int
+                    or not isinstance(chat, dict)
+                    or type(chat.get("id")) is not int
+                    or not isinstance(sender, dict)
+                    or type(sender.get("id")) is not int
+                ):
+                    return web.Response(status=400)
+            update = Update.de_json(data, application.bot)
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            OverflowError,
+            OSError,
+            RecursionError,
+        ):
             return web.Response(status=400)
-        update = Update.de_json(data, application.bot)
-        await application.update_queue.put(update)
+        if data["update_id"] in recent:
+            return web.Response(text="ok")
+        try:
+            application.update_queue.put_nowait(update)
+        except asyncio.QueueFull:
+            return web.Response(status=503, headers={"Retry-After": "5"})
+        recent[data["update_id"]] = None
+        if len(recent) > 2048:
+            recent.popitem(last=False)
         return web.Response(text="ok")
 
-    app = web.Application()
+    app = web.Application(client_max_size=config.MAX_UPLOAD + 1024 * 1024)
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
-    app.router.add_get("/app", mini_app)
-    app.router.add_post(config.WEBHOOK_PATH, webhook)
+    if config.BASE_URL:
+        app.router.add_post(config.WEBHOOK_PATH, webhook)
+    if services is not None:
+        add_routes(app, services)
     return app
 
 
-# ---------------------------------------------------------------- bot
 async def run() -> None:
     config.validate()
-
-    application = Application.builder().token(config.BOT_TOKEN).build()
+    application = (
+        Application.builder()
+        .token(config.BOT_TOKEN)
+        .update_queue(asyncio.Queue(maxsize=256))
+        .concurrent_updates(False)
+        .connect_timeout(10)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(10)
+        .build()
+    )
     register(application)
-
-    runner = web.AppRunner(build_web_app(application))
-    await runner.setup()
-    await web.TCPSite(runner, host="0.0.0.0", port=config.PORT).start()
-    logger.info("Web server listening on 0.0.0.0:%d", config.PORT)
-
+    store = await create_store(
+        config.SUPABASE_URL, config.SUPABASE_KEY, config.STORAGE_ENABLED
+    )
+    application.bot_data["store"] = store
+    services = Services(application.bot, store, config.BOT_TOKEN)
+    application.bot_data["services"] = services
+    runner = web.AppRunner(build_web_app(application, services), access_log=None)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(sig, stop.set)
-        except NotImplementedError:  # Windows
-            pass
-
-    async with application:
-        await application.bot.set_my_commands([BotCommand("start", "✨ Make a new post")])
-        me = await application.bot.get_me()
-        await application.start()
-
-        use_webhook = config.BASE_URL.startswith("https://")
-        if use_webhook:
-            url = config.BASE_URL + config.WEBHOOK_PATH
-            await application.bot.set_webhook(
-                url=url,
-                secret_token=config.WEBHOOK_SECRET,
-                allowed_updates=["message"],
-                drop_pending_updates=True,
-            )
-            logger.info("Webhook mode: %s", url)
-            logger.info("Mini App: %s", config.MINI_APP_URL)
-        else:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            await application.updater.start_polling(allowed_updates=["message"], drop_pending_updates=True)
-            logger.info("Polling mode (set WEBHOOK_URL / RENDER_EXTERNAL_URL for webhook + Mini App)")
-
-        logger.info("Bot started as @%s", me.username)
-        try:
-            await stop.wait()
-        finally:
-            logger.info("Shutting down…")
-            if application.updater and application.updater.running:
-                await application.updater.stop()
-            await application.stop()
-            await runner.cleanup()
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        await runner.setup()
+        await web.TCPSite(runner, host="0.0.0.0", port=int(config.PORT)).start()
+        async with application:
+            try:
+                await application.bot.set_my_commands(
+                    [BotCommand(name, about) for name, about in COMMANDS]
+                )
+                await application.bot.set_chat_menu_button(
+                    menu_button=menu_button() or MenuButtonCommands()
+                )
+                await application.start()
+                if config.BASE_URL:
+                    await application.bot.set_webhook(
+                        url=config.BASE_URL + config.WEBHOOK_PATH,
+                        secret_token=config.WEBHOOK_SECRET,
+                        allowed_updates=ALLOWED_UPDATES,
+                        max_connections=10,
+                        drop_pending_updates=False,
+                    )
+                    logger.info("Webhook mode enabled")
+                else:
+                    await application.bot.delete_webhook(drop_pending_updates=False)
+                    await application.updater.start_polling(
+                        allowed_updates=ALLOWED_UPDATES, drop_pending_updates=False
+                    )
+                    logger.info("Polling mode enabled")
+                logger.info("Bot ready")
+                await stop.wait()
+            finally:
+                await runner.cleanup()
+                if application.updater and application.updater.running:
+                    await application.updater.stop()
+                if application.running:
+                    await application.stop()
+    finally:
+        await runner.cleanup()
+        await services.close()
+        await store.close()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.remove_signal_handler(sig)
 
 
 def main() -> None:
@@ -119,8 +191,14 @@ def main() -> None:
         asyncio.run(run())
     except KeyboardInterrupt:
         pass
-    except RuntimeError as e:
-        logger.error("%s", e)
+    except RuntimeError as error:
+        logger.error("%s", error)
+        sys.exit(1)
+    except (TelegramError, OSError) as error:
+        logger.error(
+            "Startup failed (%s). Check configuration and Telegram connectivity.",
+            type(error).__name__,
+        )
         sys.exit(1)
 
 

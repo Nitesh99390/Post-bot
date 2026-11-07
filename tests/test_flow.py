@@ -1,163 +1,425 @@
-"""End-to-end flow test with a fake Telegram API (no network, no real token).
+"""Offline tests: validation, webhook boundary, Supabase store and app lifecycle."""
 
-Run:  BOT_TOKEN=1:test python -m tests.test_flow
-"""
 import asyncio
 import json
-import os
-import sys
+import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
-os.environ.setdefault("BOT_TOKEN", "123:TEST")
-os.environ.setdefault("WEBHOOK_URL", "https://example.onrender.com")
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+from telegram.error import NetworkError
+from telegram.ext import Application
 
-from telegram import Update  # noqa: E402
-from telegram.ext import Application  # noqa: E402
-from telegram.request import BaseRequest, RequestData  # noqa: E402
+from bot import config
+from bot.store import MemoryStore, StoreError
+from bot.post import (
+    TEXT_LIMIT,
+    Post,
+    normalize_url,
+    parse_quick_buttons,
+    plain_len,
+)
+from main import build_web_app, run
 
-from bot.handlers import register  # noqa: E402
-
-CALLS: list[tuple[str, dict]] = []
 USER = {"id": 42, "is_bot": False, "first_name": "Ravi"}
 CHAT = {"id": 42, "type": "private", "first_name": "Ravi"}
-_msg_id = 0
 
 
-class FakeRequest(BaseRequest):
-    async def initialize(self): ...
-    async def shutdown(self): ...
+def update_data(update_id=1, **content):
+    return {
+        "update_id": update_id,
+        "message": {
+            "message_id": update_id,
+            "date": 0,
+            "chat": CHAT,
+            "from": USER,
+            **content,
+        },
+    }
 
-    @property
-    def read_timeout(self):
-        return 5
 
-    async def do_request(self, url, method, request_data: RequestData | None = None, **_):
-        name = url.rsplit("/", 1)[-1]
-        params = request_data.json_parameters if request_data else {}
-        params = {k: json.loads(v) if isinstance(v, str) and v[:1] in "[{" else v for k, v in params.items()}
-        global _msg_id
-        _msg_id += 1
-        if name == "getMe":
-            result = {"id": 1, "is_bot": True, "first_name": "Bot", "username": "test_bot"}
+class ValidationTests(unittest.TestCase):
+    def test_url_normalization(self):
+        cases = {
+            "example.com": "https://example.com",
+            "@channelname": "https://t.me/channelname",
+            "HTTPS://EXAMPLE.COM/a?b=1#c": "https://example.com/a?b=1#c",
+            "https://b\u00fccher.de": "https://xn--bcher-kva.de",
+            "http://example.com:8080": "http://example.com:8080",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(normalize_url(raw), expected)
+
+    def test_unsafe_and_malformed_urls(self):
+        values = [
+            "",
+            "hello",
+            "not a link",
+            "https://[broken",
+            "https://example.com:abc",
+            "https://example.com:65536",
+            "https://example.com:0",
+            "https://user:pass@example.com",
+            "javascript:alert(1)",
+            "tg://user?id=1",
+            "ftp://example.com",
+            "https://.example.com",
+            "https://a..com",
+            "https://-host.com",
+            "https://example.com/x\ny",
+            "https://exam\x00ple.com",
+            "https://example.com\\@evil.com",
+            "https://example.com/" + "x" * 2048,
+        ]
+        for raw in values:
+            with self.subTest(raw=raw):
+                self.assertIsNone(normalize_url(raw))
+
+    def test_quick_button_parsing(self):
+        self.assertEqual(
+            parse_quick_buttons("A - example.com\nB | @chan_name"),
+            [
+                {"text": "A", "url": "https://example.com"},
+                {"text": "B", "url": "https://t.me/chan_name"},
+            ],
+        )
+        for raw in ("Just text", "A - example.com\nnot a button", "", "A - nope"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(parse_quick_buttons(raw))
+
+    def test_post_roundtrip(self):
+        post = Post(
+            media_type="photo",
+            file_id="P",
+            text="<b>x</b>",
+            buttons=[{"text": "A", "url": "https://a.com", "color": "red"}],
+            link_preview=False,
+        )
+        self.assertEqual(Post.from_dict(post.to_dict()), post)
+        for bad in (None, [], {"media_type": "bad", "file_id": "x"}, {"buttons": [{}]}):
+            self.assertIsNone(Post.from_dict(bad))
+
+    def test_utf16_and_escaped_html_length(self):
+        self.assertEqual(plain_len("<b>A</b>&amp;\U0001f600"), 4)
+        self.assertEqual(plain_len("&lt;b&gt;"), 3)
+
+    def test_invalid_post_models(self):
+        for post in (
+            Post(media_type="bad", file_id="id"),
+            Post(media_type="photo"),
+            Post(file_id="id"),
+            Post(text="x" * (TEXT_LIMIT + 1)),
+            Post(buttons=[{"text": "", "url": "https://example.com", "color": "blue"}]),
+        ):
+            with self.subTest(post=post), self.assertRaises(ValueError):
+                post.validate()
+
+    def test_configuration_validation(self):
+        with patch.multiple(
+            config, BOT_TOKEN="123:TEST", PORT="10000", BASE_URL="https://example.com"
+        ):
+            config.validate()
+            for key, values in {
+                "PORT": ["oops", "0", "65536"],
+                "BOT_TOKEN": [""],
+                "BASE_URL": [
+                    "http://example.com",
+                    "https://example.com:3000",
+                    "https://u:p@example.com",
+                    "https://example.com?x=1",
+                ],
+            }.items():
+                for value in values:
+                    with (
+                        self.subTest(key=key, value=value),
+                        patch.object(config, key, value),
+                        self.assertRaises(RuntimeError),
+                    ):
+                        config.validate()
+
+
+class WebhookTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.bot = Application.builder().token("123:TEST").build().bot
+        self.application = SimpleNamespace(
+            bot=self.bot, running=True, update_queue=asyncio.Queue(maxsize=1)
+        )
+        with patch.object(config, "BASE_URL", "https://example.com"):
+            self.webapp = build_web_app(self.application)
+
+    async def request(
+        self,
+        path="/webhook",
+        data=None,
+        secret=None,
+        method="POST",
+        body=None,
+        app=None,
+    ):
+        headers = {
+            "Content-Type": "application/json",
+            "X-Telegram-Bot-Api-Secret-Token": config.WEBHOOK_SECRET
+            if secret is None
+            else secret,
+        }
+        payload = MagicMock()
+        payload.readany = AsyncMock()
+        payload.readany.side_effect = [
+            body if body is not None else json.dumps(data).encode(),
+            b"",
+        ]
+        target = app if app is not None else self.webapp
+        request = make_mocked_request(
+            method,
+            path,
+            headers=headers,
+            payload=payload,
+            app=target,
+            client_max_size=target._client_max_size,
+        )
+        match = await target.router.resolve(request)
+        try:
+            return await match.handler(request)
+        except web.HTTPException as error:
+            return error
+
+    async def test_health_readiness_and_removed_app(self):
+        self.assertEqual((await self.request("/health", method="GET")).status, 200)
+        self.application.running = False
+        self.assertEqual((await self.request("/health", method="GET")).status, 503)
+        self.assertEqual((await self.request("/app", method="GET")).status, 404)
+
+    async def test_authentication(self):
+        for secret in ("", "wrong", "\u00e9"):
+            self.assertEqual(
+                (await self.request(data=update_data(), secret=secret)).status, 403
+            )
+        self.assertTrue(self.application.update_queue.empty())
+
+    async def test_not_running_and_wrong_method(self):
+        self.application.running = False
+        self.assertEqual((await self.request(data=update_data())).status, 503)
+        self.assertEqual((await self.request(method="GET")).status, 405)
+
+    async def test_valid_update_and_duplicate(self):
+        for _ in range(2):
+            self.assertEqual(
+                (await self.request(data=update_data(text="hello"))).status, 200
+            )
+        self.assertEqual(self.application.update_queue.qsize(), 1)
+        self.assertEqual(
+            self.application.update_queue.get_nowait().message.text, "hello"
+        )
+
+    async def test_queue_backpressure_allows_retry(self):
+        self.assertEqual((await self.request(data=update_data(1))).status, 200)
+        response = await self.request(data=update_data(2))
+        self.assertEqual(response.status, 503)
+        self.assertEqual(response.headers["Retry-After"], "5")
+        self.application.update_queue.get_nowait()
+        self.assertEqual((await self.request(data=update_data(2))).status, 200)
+        self.assertEqual(self.application.update_queue.get_nowait().update_id, 2)
+
+    async def test_invalid_payloads(self):
+        values = [
+            None,
+            [],
+            "text",
+            {},
+            {"update_id": True},
+            {"update_id": -1},
+            {"update_id": 1},
+            {"update_id": 1, "message": "bad"},
+            {"update_id": 1, "message": {}},
+            update_data(chat={}),
+            update_data(date="bad"),
+            update_data(photo=[{}]),
+            update_data(date=10**100),
+        ]
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual((await self.request(data=value)).status, 400)
+        self.assertEqual((await self.request(body=b"invalid json")).status, 400)
+        self.assertTrue(self.application.update_queue.empty())
+
+    async def test_body_limit(self):
+        self.assertEqual((await self.request(body=b"x" * (256 * 1024 + 1))).status, 413)
+        self.assertTrue(self.application.update_queue.empty())
+
+    async def test_polling_has_no_webhook_route(self):
+        with patch.object(config, "BASE_URL", ""):
+            polling_app = build_web_app(self.application)
+        self.assertEqual((await self.request(app=polling_app)).status, 404)
+
+
+class SupabaseStoreTests(unittest.IsolatedAsyncioTestCase):
+    async def make(self, handler):
+        import httpx
+
+        from bot.store import SupabaseStore
+
+        store = SupabaseStore("https://x.supabase.co", "sb_publishable_test")
+        await store._client.aclose()
+        store._client = httpx.AsyncClient(
+            base_url="https://x.supabase.co/rest/v1",
+            headers={"apikey": "sb_publishable_test"},
+            transport=httpx.MockTransport(handler),
+        )
+        return store
+
+    async def test_missing_tables_fall_back_to_memory(self):
+        import httpx
+
+        from bot import store as store_module
+
+        def handler(request):
+            return httpx.Response(404, json={"message": "Could not find the table"})
+
+        original = store_module.SupabaseStore
+        made = await self.make(handler)
+        with patch.object(store_module, "SupabaseStore", return_value=made):
+            result = await store_module.create_store("https://x.supabase.co", "k")
+        self.assertIsInstance(result, MemoryStore)
+        self.assertIs(store_module.SupabaseStore, original)
+
+    async def test_requests_are_scoped_and_upserted(self):
+        import httpx
+
+        seen = []
+
+        def handler(request):
+            seen.append(request)
+            if request.method == "GET" and request.url.path.endswith("/saved_posts"):
+                return httpx.Response(200, json=[])
+            if request.method == "POST" and request.url.path.endswith("/saved_posts"):
+                return httpx.Response(201, json=[{"id": 9}])
+            return httpx.Response(201)
+
+        store = await self.make(handler)
+        await store.save_session(42, {"state": "menu"})
+        upsert = seen[-1]
+        self.assertEqual(upsert.url.params["on_conflict"], "user_id")
+        self.assertIn("merge-duplicates", upsert.headers["Prefer"])
+        self.assertEqual(json.loads(upsert.content)["user_id"], 42)
+        self.assertEqual(await store.save_post(42, "Promo", {"text": "x"}), (9, False))
+        self.assertTrue(all(r.url.params.get("user_id", "eq.42") == "eq.42" for r in seen))
+        await store.close()
+
+    async def test_http_errors_raise_store_error(self):
+        import httpx
+
+        store = await self.make(lambda request: httpx.Response(500, json={"message": "boom"}))
+        with self.assertRaises(StoreError):
+            await store.load_session(1)
+        await store.close()
+
+
+class LifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def exercise(self, webhook=True, fail=False):
+        application = MagicMock()
+        application.running = False
+        application.updater.running = False
+        application.__aenter__.return_value = application
+        application.bot.set_my_commands = AsyncMock()
+        application.bot.set_chat_menu_button = AsyncMock()
+        application.bot.set_webhook = AsyncMock(
+            side_effect=NetworkError("offline") if fail else None
+        )
+        application.bot.delete_webhook = AsyncMock()
+
+        async def start():
+            application.running = True
+
+        async def stop_app():
+            application.running = False
+
+        async def polling():
+            application.updater.running = True
+
+        application.start = AsyncMock(side_effect=start)
+        application.stop = AsyncMock(side_effect=stop_app)
+        application.updater.start_polling = AsyncMock(side_effect=lambda **kwargs: None)
+        application.updater.stop = AsyncMock()
+        if not webhook:
+
+            async def start_polling(**kwargs):
+                await polling()
+
+            application.updater.start_polling.side_effect = start_polling
+
+        builder = MagicMock()
+        for method in (
+            "token",
+            "update_queue",
+            "concurrent_updates",
+            "connect_timeout",
+            "read_timeout",
+            "write_timeout",
+            "pool_timeout",
+        ):
+            getattr(builder, method).return_value = builder
+        builder.build.return_value = application
+        runner = SimpleNamespace(setup=AsyncMock(), cleanup=AsyncMock())
+        site = SimpleNamespace(start=AsyncMock())
+        stop = asyncio.Event()
+        stop.set()
+        loop = asyncio.get_running_loop()
+        with (
+            patch.multiple(
+                config,
+                BOT_TOKEN="123:TEST",
+                PORT="10000",
+                BASE_URL="https://example.com" if webhook else "",
+                STORAGE_ENABLED=False,
+            ),
+            patch("main.Application.builder", return_value=builder),
+            patch("main.web.AppRunner", return_value=runner),
+            patch("main.web.TCPSite", return_value=site),
+            patch("main.asyncio.Event", return_value=stop),
+            patch.object(loop, "add_signal_handler"),
+            patch.object(loop, "remove_signal_handler"),
+        ):
+            if fail:
+                with self.assertRaises(NetworkError):
+                    await run()
+            else:
+                await run()
+        runner.setup.assert_awaited_once()
+        site.start.assert_awaited_once()
+        self.assertGreaterEqual(runner.cleanup.await_count, 1)
+        application.stop.assert_awaited_once()
+        application.__aexit__.assert_awaited_once()
+        application.bot.set_chat_menu_button.assert_awaited_once()
+        button = application.bot.set_chat_menu_button.call_args.kwargs["menu_button"]
+        if webhook:  # the menu button opens the Mini App served from BASE_URL
+            self.assertEqual(button.type, "web_app")
+            self.assertEqual(button.web_app.url, "https://example.com/app/")
         else:
-            CALLS.append((name, params))
-            result = {"message_id": _msg_id, "date": 0, "chat": CHAT, "text": "x"}
-        return 200, json.dumps({"ok": True, "result": result}).encode()
+            self.assertEqual(button.type, "commands")
+        if webhook:
+            application.bot.set_webhook.assert_awaited_once()
+            self.assertFalse(
+                application.bot.set_webhook.call_args.kwargs["drop_pending_updates"]
+            )
+            application.updater.start_polling.assert_not_awaited()
+        else:
+            application.bot.delete_webhook.assert_awaited_once_with(
+                drop_pending_updates=False
+            )
+            application.updater.start_polling.assert_awaited_once()
+            application.updater.stop.assert_awaited_once()
 
+    async def test_webhook_startup_and_shutdown(self):
+        await self.exercise()
 
-def msg(**kw):
-    global _msg_id
-    _msg_id += 1
-    return {"update_id": _msg_id, "message": {"message_id": _msg_id, "date": 0, "chat": CHAT, "from": USER, **kw}}
+    async def test_polling_startup_and_shutdown(self):
+        await self.exercise(webhook=False)
 
-
-async def send(app, **kw):
-    CALLS.clear()
-    await app.process_update(Update.de_json(msg(**kw), app.bot))
-    return list(CALLS)
-
-
-def kb_texts(call):
-    rm = call[1].get("reply_markup") or {}
-    return [[b["text"] for b in row] for row in rm.get("keyboard", [])]
-
-
-def last_text(calls):
-    return calls[-1][1].get("text", "")
-
-
-async def main():
-    app = Application.builder().token("123:TEST").request(FakeRequest()).get_updates_request(FakeRequest()).build()
-    register(app)
-    await app.initialize()
-
-    c = await send(app, text="/start", entities=[{"type": "bot_command", "offset": 0, "length": 6}])
-    assert kb_texts(c[-1]) == [["✨ Create Post", "🎨 Mini App"]], c
-    assert c[-1][1]["reply_markup"]["keyboard"][0][1]["web_app"]["url"] == "https://example.onrender.com/app"
-
-    c = await send(app, text="✨ Create Post")
-    assert "Step 1" in last_text(c) and c[-1][1]["reply_markup"] == {"remove_keyboard": True}
-
-    # GIF
-    c = await send(app, animation={"file_id": "GIF1", "file_unique_id": "u", "width": 1, "height": 1, "duration": 1},
-                   document={"file_id": "GIF1", "file_unique_id": "u"})
-    assert c[0][0] == "sendAnimation" and c[0][1]["animation"] == "GIF1", c
-    assert kb_texts(c[-1]) == [["📝 Add Text", "🔘 Add Button"], ["✅ Done"]], c
-
-    # Text
-    c = await send(app, text="📝 Add Text")
-    assert c[-1][1]["reply_markup"] == {"remove_keyboard": True}
-    c = await send(app, text="Hello <world> & friends")
-    assert c[0][0] == "sendAnimation" and c[0][1]["caption"] == "Hello &lt;world&gt; &amp; friends", c
-    assert kb_texts(c[-1])[1] == ["✅ Done"]
-
-    # Button
-    c = await send(app, text="🔘 Add Button")
-    assert c[-1][1]["reply_markup"] == {"remove_keyboard": True}
-    await send(app, text="Join Channel")
-    c = await send(app, text="not a link")
-    assert "not a link" in last_text(c)
-    c = await send(app, text="@mychannel")
-    assert kb_texts(c[-1]) == [["🔴 Red", "🟢 Green", "🔵 Blue"]], c
-    assert [b["style"] for b in c[-1][1]["reply_markup"]["keyboard"][0]] == ["danger", "success", "primary"]
-    c = await send(app, text="🟢 Green")
-    btn = c[0][1]["reply_markup"]["inline_keyboard"][0][0]
-    assert btn == {"text": "Join Channel", "url": "https://t.me/mychannel", "style": "success"}, btn
-
-    # Second button, red
-    await send(app, text="🔘 Add Button")
-    await send(app, text="Website")
-    await send(app, text="example.com")
-    c = await send(app, text="🔴 Red")
-    rows = c[0][1]["reply_markup"]["inline_keyboard"]
-    assert [r[0]["style"] for r in rows] == ["success", "danger"], rows
-
-    # Done
-    c = await send(app, text="✅ Done")
-    assert c[0][0] == "sendAnimation" and "ready" in last_text(c)
-    assert kb_texts(c[-1]) == [["✨ Create Post", "🎨 Mini App"]]
-
-    # Emoji only + sticker path
-    await send(app, text="✨ Create Post")
-    c = await send(app, text="😍🔥")
-    assert c[0][0] == "sendMessage" and c[0][1]["text"] == "😍🔥", c
-    await send(app, text="✨ Create Post")
-    c = await send(app, sticker={"file_id": "ST", "file_unique_id": "s", "width": 1, "height": 1,
-                                 "is_animated": False, "is_video": False, "type": "regular"})
-    assert c[0][0] == "sendSticker"
-    await send(app, text="📝 Add Text")
-    c = await send(app, text="Hi")
-    assert [x[0] for x in c] == ["sendSticker", "sendMessage", "sendMessage"], c
-
-    # Mini App data
-    data = json.dumps({"emoji": "🎉", "text": "<b>x</b>", "buttons": [
-        {"text": "Go", "url": "t.me/abc", "color": "red"}, {"text": "Bad", "url": "nope"}]})
-    c = await send(app, web_app_data={"data": data, "button_text": "🎨 Mini App"})
-    assert c[0][1]["text"] == "🎉\n\n&lt;b&gt;x&lt;/b&gt;", c
-    assert c[0][1]["reply_markup"]["inline_keyboard"] == [[{"text": "Go", "url": "https://t.me/abc", "style": "danger"}]]
-    c = await send(app, web_app_data={"data": "garbage", "button_text": "x"})
-    assert "went wrong" in last_text(c)
-
-    # Random text while the menu is open -> asked to pick a button
-    c = await send(app, text="hello")
-    assert "choose one of the buttons" in last_text(c), c
-
-    # Random text when idle (after /start)
-    await send(app, text="/start", entities=[{"type": "bot_command", "offset": 0, "length": 6}])
-    c = await send(app, text="hello")
-    assert "Create Post" in last_text(c)
-
-    # Very long text with a photo -> photo first, then text message with buttons
-    await send(app, text="✨ Create Post")
-    await send(app, photo=[{"file_id": "P1", "file_unique_id": "p", "width": 1, "height": 1}])
-    await send(app, text="📝 Add Text")
-    c = await send(app, text="a" * 1500)
-    assert [x[0] for x in c] == ["sendPhoto", "sendMessage", "sendMessage"], c
-    assert "caption" not in c[0][1]
-
-    await app.shutdown()
-    print("✅ ALL FLOW TESTS PASSED")
+    async def test_webhook_setup_failure_cleans_up(self):
+        await self.exercise(fail=True)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    unittest.main()

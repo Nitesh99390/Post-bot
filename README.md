@@ -1,65 +1,72 @@
-# ✨ Post Maker Bot
+# Post Maker: Telegram Mini App
 
-A super-simple Telegram bot that makes beautiful posts with **GIF, stickers, emojis, text** and **colourful buttons** 🌈 — so easy a kid can use it. Comes with a colourful **Mini App** and is ready for **Render**.
+Compose a post once, then publish it to any number of your groups and channels from a fast Telegram **Mini App**. The bot itself says almost nothing in chat: it shows one "Open Post Maker" button, and everything else happens in the app.
 
-## 🎯 How it works (only a few taps)
+## What you get
 
-```
-✨ Create Post
-   └─ send a GIF / Sticker / Emoji (photo/video also OK)   → 👀 preview
-[📝 Add Text]  [🔘 Add Button]
-[✅ Done]
-   ├─ 📝 Add Text   → keyboard hides → type text            → 👀 preview
-   └─ 🔘 Add Button → keyboard hides → button name → link
-                    → [🔴 Red] [🟢 Green] [🔵 Blue]          → 👀 preview
-✅ Done → final post (forward it anywhere) → back to start
-```
+- **Compose**: rich text (bold, italic, underline, strike, code, spoiler, quote, links), one attachment (photo, video, GIF, audio or file up to 30 MB), up to 10 coloured link buttons, link-preview switch and a live preview.
+- **Groups**: add the bot as an admin to any group or channel and it appears in the app automatically. Keep **one default group**, **select as many as you like**, and send to all of them in one tap.
+- **Send with live progress**: per-chat status (delivered, failed, not confirmed), retry only the failed ones, links to the posted messages.
+- **Saved posts**: keep up to 30 reusable posts.
+- **Profile**: your Telegram name, photo and username, Premium badge, usage stats and sync status.
+- Dark and light themes that follow Telegram, animations, haptics, safe-area support.
 
-- After **every step** the bot sends the post as it looks so far.
-- Button colours use Telegram's native button styles (Bot API 9.4+).
-- Links can be typed loosely: `https://t.me/x`, `t.me/x`, `@username`, `example.com`.
+## Reliability
 
-### 🎨 Mini App
-Tap **🎨 Mini App** → pick emojis, write text, add red/green/blue buttons with a live preview → **🚀 Send to Bot**. The bot sends the post back and you can still add a GIF/sticker or more text/buttons in chat.
+- Draft is auto-saved while you type (debounced) with a local copy that survives offline or a closed app; the sync chip shows *Synced / Saving / Retrying / Offline* and Telegram asks before closing while changes are unsynced.
+- API calls retry with backoff; storage calls retry on 429/5xx.
+- Sending uses a per-send `request_id`, so a retried request never posts twice. Network errors whose outcome is unknown are shown as **Not confirmed** and are never blindly resent. Telegram flood limits (`RetryAfter`) are waited out, migrated groups are followed, and one failing chat never stops the others.
+- Only an admin who can post in a chat can link it, and this is re-checked when sending.
+- Every API request is authenticated by validating Telegram's signed `initData` (HMAC-SHA256 with the bot token). There are no logins and no passwords.
 
-## 🚀 Deploy on Render
+## Setup
 
-1. Create a bot with [@BotFather](https://t.me/BotFather) and copy the token.
-2. On [Render](https://render.com) → **New → Blueprint** (or Web Service) → connect this repo. `render.yaml` is detected automatically.
-3. Add the environment variable **`BOT_TOKEN`** = your token.
-4. Deploy. Logs show `Webhook mode: https://<app>.onrender.com/webhook` and `Bot started as @yourbot`.
+1. **Supabase**: open the dashboard → **SQL Editor**, paste `supabase/migrations/20261106000000_mini_app.sql` and click **Run** (safe to re-run; it also creates the older tables). Without it the app falls back to in-memory storage and shows a "Temporary" sync badge.
+2. **Deploy** (Render blueprint in `render.yaml`) and set `BOT_TOKEN`. Render provides `RENDER_EXTERNAL_URL`, which is used for the webhook and for the Mini App address `<url>/app/`. The bot sets its own menu button to the Mini App on start.
+3. Open the bot in Telegram, press **Post Maker** (menu button) or `/start`.
+4. Add the bot as **admin** to a group or channel (the app has buttons that open Telegram's add-bot screen with the right admin rights pre-selected). It shows up in **Groups** within seconds. You can also add a chat by `@username` or `t.me` link.
 
-That's it — no other settings needed:
-- Render sets `RENDER_EXTERNAL_URL` automatically → the bot uses a **webhook**, so a sleeping free instance **wakes up** when someone messages the bot (first reply may take ~30-50 s after sleep).
-- The Mini App is served at `https://<app>.onrender.com/app` and its button appears automatically.
+Optional BotFather step: `/setmenubutton` is not needed; if you want a launch button next to the chat, `/newapp` can register the same URL.
 
-## 🧑‍💻 Run locally
+## Run locally
 
 ```bash
 pip install -r requirements.txt
-export BOT_TOKEN=123456:ABC...
-python main.py          # polling mode (Mini App button hidden without a public https URL)
+export BOT_TOKEN=your_bot_token
+export WEBHOOK_URL=https://your-public-https-url   # Mini Apps require HTTPS
+python main.py
 ```
-Set `WEBHOOK_URL=https://your-public-url` to test webhook + Mini App locally (e.g. with a tunnel).
 
-Test the full flow offline (fake Telegram API):
+Without `WEBHOOK_URL` the bot runs in polling mode and the Mini App button is not configured (Telegram requires an HTTPS address). Set `WEBAPP_URL` to override the address Telegram opens. `PORT` defaults to 10000. Environment variables are read from the process; `.env` is not loaded automatically.
+
+| Variable | Purpose |
+|---|---|
+| `BOT_TOKEN` | Required. From @BotFather. |
+| `WEBHOOK_URL` / `RENDER_EXTERNAL_URL` | Public HTTPS base URL (webhook + Mini App). |
+| `WEBAPP_URL` | Optional override for the Mini App address. |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Storage; default to the linked project. Use a `sb_secret_…` key on the server and run the "harden" block at the end of the SQL for tighter security. |
+| `STORAGE=memory` | Disable Supabase. |
+
+## Server
+
+One aiohttp process serves `/health`, `/webhook`, the static Mini App under `/app/` and the JSON API under `/api/` (state, draft, media, chats, send, saved posts). Static files are sent with a strict Content-Security-Policy that allows embedding only in Telegram. The webhook uses a token-derived secret, a 256 KiB body limit, validation, a bounded queue and recent-update deduplication. The bot receives `message` and `my_chat_member` updates; the latter keeps the group list current when the bot is added, promoted, removed or its group is upgraded.
+
+Run **one** instance per bot token. Free Render instances sleep and have a cold start; the app shows a retry screen if the server is still waking. Jobs in progress live in memory: a restart marks unfinished chats as failed so you can retry.
+
+## Tests
+
 ```bash
-python -m tests.test_flow
+python -m unittest discover -s tests -v
 ```
 
-## 🗂 Project structure
+Offline: fake Telegram bot, in-memory store, mocked Supabase transport and the real aiohttp app via a test client. No token, database or network needed.
 
-```
-├── main.py            # web server: /health, /app (Mini App), /webhook  (+ polling fallback)
-├── bot/
-│   ├── config.py      # BOT_TOKEN, PORT, public URL
-│   ├── handlers.py    # the whole step-by-step flow + Mini App data
-│   └── post.py        # Post model, coloured buttons, sending logic
-├── webapp/index.html  # colourful Mini App
-├── tests/test_flow.py # end-to-end flow test
-├── render.yaml
-└── requirements.txt
+### Try the whole UI without a token (development only)
+
+```bash
+python tools/devserver.py 8080      # fake bot + demo groups, prints a signed initData
+pip install playwright && playwright install chromium
+python tools/e2e.py http://localhost:8080 dark   # drives the Mini App end to end, screenshots in /tmp/shots
 ```
 
-## 📄 License
-MIT
+`tools/` is not used in production and `playwright` is not in `requirements.txt`.
