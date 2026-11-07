@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" content="#0b0d14">
+<title>Post Maker</title>
+<link rel="preload" href="fonts/jakarta.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/bricolage.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="style.css">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<div class="bg" aria-hidden="true"><i></i><i></i></div>
+
+<div id="boot" class="boot">
+  <div class="boot-logo"><span></span></div>
+  <div class="boot-name">Post Maker</div>
+  <div class="boot-bar"><i></i></div>
+</div>
+
+<div id="app" class="app" hidden>
+  <header class="top">
+    <button class="top-user" id="topUser" aria-label="Profile"></button>
+    <div class="top-title" id="topTitle">Compose</div>
+    <div class="sync" id="sync" role="status" aria-live="polite"></div>
+  </header>
+
+  <main id="views" class="views">
+    <section class="view" id="view-compose" data-view="compose"></section>
+    <section class="view" id="view-groups" data-view="groups"></section>
+    <section class="view" id="view-saved" data-view="saved"></section>
+    <section class="view" id="view-profile" data-view="profile"></section>
+  </main>
+
+  <div id="sendbar" class="sendbar"></div>
+
+  <nav class="nav" id="nav" aria-label="Main">
+    <button data-tab="compose" class="on"></button>
+    <button data-tab="groups"></button>
+    <button data-tab="saved"></button>
+    <button data-tab="profile"></button>
+    <i class="nav-dot" id="navDot"></i>
+  </nav>
+</div>
+
+<div id="blocker" class="blocker" hidden></div>
+<div id="sheetRoot"></div>
+<div id="toasts" class="toasts" aria-live="polite"></div>
+<canvas id="fx" class="fx" aria-hidden="true"></canvas>
+
+<script src="icons.js"></script>
+<script src="core.js"></script>
+<script src="compose.js"></script>
+<script src="groups.js"></script>
+<script src="saved.js"></script>
+<script src="profile.js"></script>
+<script src="main.js"></script>
+</body>
+</html>
