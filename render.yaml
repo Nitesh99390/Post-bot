@@ -11,6 +11,5 @@ services:
         sync: false
       - key: SUPABASE_KEY
         sync: false
-      # Mini App address defaults to $RENDER_EXTERNAL_URL/app/ ; set WEBAPP_URL only to override.
       - key: PYTHON_VERSION
         value: 3.12.7
