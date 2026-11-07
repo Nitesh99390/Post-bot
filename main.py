@@ -1,7 +1,8 @@
-"""Telegram bot with a health endpoint and optional authenticated webhook."""
+"""Post Maker: Telegram bot + Mini App server (static app, JSON API, webhook)."""
 
 import asyncio
 import hmac
+import json
 import logging
 import signal
 import sys
@@ -13,8 +14,12 @@ from telegram.error import TelegramError
 from telegram.ext import Application
 
 from bot import config
-from bot.handlers import COMMANDS, register
+from bot.api import Services, add_routes
+from bot.handlers import COMMANDS, menu_button, register
 from bot.store import create_store
+
+WEBHOOK_MAX_BODY = 256 * 1024
+ALLOWED_UPDATES = ["message", "my_chat_member"]
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -25,7 +30,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
-def build_web_app(application: Application) -> web.Application:
+def build_web_app(
+    application: Application, services: Services | None = None
+) -> web.Application:
     recent: OrderedDict[int, None] = OrderedDict()
 
     async def health(_request: web.Request) -> web.Response:
@@ -42,26 +49,43 @@ def build_web_app(application: Application) -> web.Application:
         if not application.running:
             return web.Response(status=503, headers={"Retry-After": "5"})
         try:
-            data = await request.json()
+            raw = await request.read()
+            if len(raw) > WEBHOOK_MAX_BODY:
+                return web.Response(status=413)
+            data = json.loads(raw)
             if (
                 not isinstance(data, dict)
                 or type(data.get("update_id")) is not int
                 or data["update_id"] < 0
             ):
                 return web.Response(status=400)
-            message = data.get("message")
-            if not isinstance(message, dict):
-                return web.Response(status=400)
-            chat, sender = message.get("chat"), message.get("from")
-            if (
-                type(message.get("message_id")) is not int
-                or type(message.get("date")) is not int
-                or not isinstance(chat, dict)
-                or type(chat.get("id")) is not int
-                or not isinstance(sender, dict)
-                or type(sender.get("id")) is not int
-            ):
-                return web.Response(status=400)
+            if isinstance(data.get("my_chat_member"), dict):
+                change = data["my_chat_member"]
+                chat, sender = change.get("chat"), change.get("from")
+                if (
+                    type(change.get("date")) is not int
+                    or not isinstance(chat, dict)
+                    or type(chat.get("id")) is not int
+                    or not isinstance(sender, dict)
+                    or type(sender.get("id")) is not int
+                    or not isinstance(change.get("new_chat_member"), dict)
+                    or not isinstance(change.get("old_chat_member"), dict)
+                ):
+                    return web.Response(status=400)
+            else:
+                message = data.get("message")
+                if not isinstance(message, dict):
+                    return web.Response(status=400)
+                chat, sender = message.get("chat"), message.get("from")
+                if (
+                    type(message.get("message_id")) is not int
+                    or type(message.get("date")) is not int
+                    or not isinstance(chat, dict)
+                    or type(chat.get("id")) is not int
+                    or not isinstance(sender, dict)
+                    or type(sender.get("id")) is not int
+                ):
+                    return web.Response(status=400)
             update = Update.de_json(data, application.bot)
         except (
             ValueError,
@@ -84,11 +108,13 @@ def build_web_app(application: Application) -> web.Application:
             recent.popitem(last=False)
         return web.Response(text="ok")
 
-    app = web.Application(client_max_size=256 * 1024)
+    app = web.Application(client_max_size=config.MAX_UPLOAD + 1024 * 1024)
     app.router.add_get("/", health)
     app.router.add_get("/health", health)
     if config.BASE_URL:
         app.router.add_post(config.WEBHOOK_PATH, webhook)
+    if services is not None:
+        add_routes(app, services)
     return app
 
 
@@ -110,7 +136,9 @@ async def run() -> None:
         config.SUPABASE_URL, config.SUPABASE_KEY, config.STORAGE_ENABLED
     )
     application.bot_data["store"] = store
-    runner = web.AppRunner(build_web_app(application), access_log=None)
+    services = Services(application.bot, store, config.BOT_TOKEN)
+    application.bot_data["services"] = services
+    runner = web.AppRunner(build_web_app(application, services), access_log=None)
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -121,17 +149,17 @@ async def run() -> None:
         async with application:
             try:
                 await application.bot.set_my_commands(
-                    [BotCommand(name, about) for name, _, about in COMMANDS]
+                    [BotCommand(name, about) for name, about in COMMANDS]
                 )
                 await application.bot.set_chat_menu_button(
-                    menu_button=MenuButtonCommands()
+                    menu_button=menu_button() or MenuButtonCommands()
                 )
                 await application.start()
                 if config.BASE_URL:
                     await application.bot.set_webhook(
                         url=config.BASE_URL + config.WEBHOOK_PATH,
                         secret_token=config.WEBHOOK_SECRET,
-                        allowed_updates=["message"],
+                        allowed_updates=ALLOWED_UPDATES,
                         max_connections=10,
                         drop_pending_updates=False,
                     )
@@ -139,7 +167,7 @@ async def run() -> None:
                 else:
                     await application.bot.delete_webhook(drop_pending_updates=False)
                     await application.updater.start_polling(
-                        allowed_updates=["message"], drop_pending_updates=False
+                        allowed_updates=ALLOWED_UPDATES, drop_pending_updates=False
                     )
                     logger.info("Polling mode enabled")
                 logger.info("Bot ready")
@@ -152,6 +180,7 @@ async def run() -> None:
                     await application.stop()
     finally:
         await runner.cleanup()
+        await services.close()
         await store.close()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)

@@ -1,57 +1,57 @@
-# Post Maker Bot
+# Post Maker: Telegram Mini App
 
-A focused Telegram bot for composing text, photos, videos, GIFs, stickers, audio, voice notes, video messages and files with coloured link buttons. No Mini App or frontend; everything happens in private chat. Drafts, saved templates and stats are stored in **Supabase**.
+Compose a post once, then publish it to any number of your groups and channels from a fast Telegram **Mini App**. The bot itself says almost nothing in chat: it shows one "Open Post Maker" button, and everything else happens in the app.
 
-## Workflow
+## What you get
 
-1. Choose **Create Post** and send text or media.
-2. Use **Edit Text**, **Add Button** and **Preview** to refine the draft.
-3. Choose **Finish** and forward the result to a channel or group.
+- **Compose**: rich text (bold, italic, underline, strike, code, spoiler, quote, links), one attachment (photo, video, GIF, audio or file up to 30 MB), up to 10 coloured link buttons, link-preview switch and a live preview.
+- **Groups**: add the bot as an admin to any group or channel and it appears in the app automatically. Keep **one default group**, **select as many as you like**, and send to all of them in one tap.
+- **Send with live progress**: per-chat status (delivered, failed, not confirmed), retry only the failed ones, links to the posted messages.
+- **Saved posts**: keep up to 30 reusable posts.
+- **Profile**: your Telegram name, photo and username, Premium badge, usage stats and sync status.
+- Dark and light themes that follow Telegram, animations, haptics, safe-area support.
 
-Text formatting is preserved. Telegram controls the chat font; headings use native bold and italic rather than decorative Unicode. Buttons support blue, green and red styles on compatible Telegram clients.
+## Reliability
 
-The keyboard stays small: **Create Post**, then **Edit Text / Add Button / Preview / Finish** (and **Remove Last Button** once a button exists). Extra features use commands and smart input instead of extra buttons:
+- Draft is auto-saved while you type (debounced) with a local copy that survives offline or a closed app; the sync chip shows *Synced / Saving / Retrying / Offline* and Telegram asks before closing while changes are unsynced.
+- API calls retry with backoff; storage calls retry on 429/5xx.
+- Sending uses a per-send `request_id`, so a retried request never posts twice. Network errors whose outcome is unknown are shown as **Not confirmed** and are never blindly resent. Telegram flood limits (`RetryAfter`) are waited out, migrated groups are followed, and one failing chat never stops the others.
+- Only an admin who can post in a chat can link it, and this is re-checked when sending.
+- Every API request is authenticated by validating Telegram's signed `initData` (HMAC-SHA256 with the bot token). There are no logins and no passwords.
 
-| Feature | How |
-|---|---|
-| Save a template | `/save name` (name defaults to the first line) |
-| Saved posts | `/posts`, then `/open_ID` or `/del_ID` (up to 30) |
-| Publish directly | `/channel @name` once (bot must be admin), then `/publish` or `/publish @other` |
-| Link preview | `/linkpreview` toggles it for the draft |
-| Stats | `/stats` and the `/start` screen show posts created and saved templates |
-| Copy a post | Forward any post while creating; its URL buttons are imported |
-| Several buttons at once | In Add Button (or straight from the editor) send `Label - link` lines, e.g. `Join - @mychannel` and `Site \| example.com` |
+## Setup
 
-Old per-chat **My profile** Mini App menu buttons are reset to the native command menu automatically the first time each user messages the bot after a restart.
+1. **Supabase**: open the dashboard → **SQL Editor**, paste `supabase/migrations/20261106000000_mini_app.sql` and click **Run** (safe to re-run; it also creates the older tables). Without it the app falls back to in-memory storage and shows a "Temporary" sync badge.
+2. **Deploy** (Render blueprint in `render.yaml`) and set `BOT_TOKEN`. Render provides `RENDER_EXTERNAL_URL`, which is used for the webhook and for the Mini App address `<url>/app/`. The bot sets its own menu button to the Mini App on start.
+3. Open the bot in Telegram, press **Post Maker** (menu button) or `/start`.
+4. Add the bot as **admin** to a group or channel (the app has buttons that open Telegram's add-bot screen with the right admin rights pre-selected). It shows up in **Groups** within seconds. You can also add a chat by `@username` or `t.me` link.
 
-`/new` starts a fresh post, `/back` leaves the current step without discarding the post, `/preview` shows the draft, `/cancel` discards it, and `/help` explains the flow. **Remove Last Button** lets you undo a button, including a link rejected by Telegram. Edit Text replaces the full text. Sending media from the editor replaces the media and uses its caption, if supplied.
+Optional BotFather step: `/setmenubutton` is not needed; if you want a launch button next to the chat, `/newapp` can register the same URL.
 
-Stickers with text and media with text exceeding the caption limit are sent as two messages. Forward both messages. Text is limited to 4,000 UTF-16 units (some symbols count as two), with up to 10 buttons. Links accept HTTP(S), bare domains and @channel names; other schemes and credential-bearing URLs are rejected.
-
-## Run
+## Run locally
 
 ```bash
 pip install -r requirements.txt
 export BOT_TOKEN=your_bot_token
+export WEBHOOK_URL=https://your-public-https-url   # Mini Apps require HTTPS
 python main.py
 ```
 
-Environment variables are read from the process; `.env` files are not loaded automatically. Without a public URL the bot uses polling. Set `WEBHOOK_URL` to a public HTTPS base URL to use webhooks. `PORT` defaults to 10000.
+Without `WEBHOOK_URL` the bot runs in polling mode and the Mini App button is not configured (Telegram requires an HTTPS address). Set `WEBAPP_URL` to override the address Telegram opens. `PORT` defaults to 10000. Environment variables are read from the process; `.env` is not loaded automatically.
 
-## Supabase
+| Variable | Purpose |
+|---|---|
+| `BOT_TOKEN` | Required. From @BotFather. |
+| `WEBHOOK_URL` / `RENDER_EXTERNAL_URL` | Public HTTPS base URL (webhook + Mini App). |
+| `WEBAPP_URL` | Optional override for the Mini App address. |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Storage; default to the linked project. Use a `sb_secret_…` key on the server and run the "harden" block at the end of the SQL for tighter security. |
+| `STORAGE=memory` | Disable Supabase. |
 
-1. Open the Supabase dashboard → **SQL Editor**, paste `supabase/migrations/20261104000000_post_bot.sql` and click **Run** (safe to re-run). It creates `bot_users`, `bot_sessions` and `saved_posts` with Row Level Security enabled.
-2. That's it: the project URL and publishable key are defaults in `bot/config.py`. Override them with `SUPABASE_URL` / `SUPABASE_KEY`. For tighter security, set `SUPABASE_KEY` to a `sb_secret_…` key on Render and run the optional "harden" block at the end of the SQL file.
+## Server
 
-If the tables are missing or Supabase is unreachable at startup, the bot logs a warning and uses in-memory storage so it keeps working. Storage errors during use never discard a draft. `STORAGE=memory` disables Supabase.
+One aiohttp process serves `/health`, `/webhook`, the static Mini App under `/app/` and the JSON API under `/api/` (state, draft, media, chats, send, saved posts). Static files are sent with a strict Content-Security-Policy that allows embedding only in Telegram. The webhook uses a token-derived secret, a 256 KiB body limit, validation, a bounded queue and recent-update deduplication. The bot receives `message` and `my_chat_member` updates; the latter keeps the group list current when the bot is added, promoted, removed or its group is upgraded.
 
-## Render
-
-Connect this repository as a Blueprint and set `BOT_TOKEN`. The existing `render.yaml` configures the Python service and health check. Render supplies `RENDER_EXTERNAL_URL` automatically. Run only one service instance per bot token.
-
-Only `/`, `/health` and (in webhook mode) `/webhook` are served. Health returns 503 until the application starts. Webhooks use a token-derived secret, a 256 KiB body limit, validation, a bounded queue and recent-update deduplication. Saturation returns 503 so Telegram can retry. Pending updates are not deliberately dropped on startup. The Telegram menu button is reset to native commands.
-
-With Supabase, drafts (including the current step), templates and stats survive restarts and redeploys. Queued updates and the recent-update cache are held in memory; restarting loses them; deduplication is not an exactly-once delivery guarantee. Delivery failures retain the draft while the process is running. Ambiguous network failures are not automatically resent: check the chat before retrying. Free Render instances can sleep and have a cold-start delay. Previously configured BotFather profile/launch buttons and chat-specific menu overrides must be removed separately in Telegram if present.
+Run **one** instance per bot token. Free Render instances sleep and have a cold start; the app shows a retry screen if the server is still waking. Jobs in progress live in memory: a restart marks unfinished chats as failed so you can retry.
 
 ## Tests
 
@@ -59,4 +59,14 @@ With Supabase, drafts (including the current step), templates and stats survive 
 python -m unittest discover -s tests -v
 ```
 
-Tests use a fake Telegram transport, an in-memory store and a mocked Supabase HTTP transport. No real token, database or outbound calls are required.
+Offline: fake Telegram bot, in-memory store, mocked Supabase transport and the real aiohttp app via a test client. No token, database or network needed.
+
+### Try the whole UI without a token (development only)
+
+```bash
+python tools/devserver.py 8080      # fake bot + demo groups, prints a signed initData
+pip install playwright && playwright install chromium
+python tools/e2e.py http://localhost:8080 dark   # drives the Mini App end to end, screenshots in /tmp/shots
+```
+
+`tools/` is not used in production and `playwright` is not in `requirements.txt`.
