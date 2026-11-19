@@ -1,4 +1,4 @@
-"""Offline regression tests for the Live Post Studio, in-place message editing, callbacks, validation and webhook boundary."""
+"""Offline regression tests for the editor, validation and webhook boundary."""
 
 import asyncio
 import json
@@ -55,32 +55,11 @@ def update_data(update_id=1, **content):
     }
 
 
-def callback_data_payload(update_id=1, cb_data="st:done", msg_id=10, user_id=42):
-    user = {**USER, "id": user_id}
-    chat = {**CHAT, "id": user_id}
-    return {
-        "update_id": update_id,
-        "callback_query": {
-            "id": f"cb_{update_id}",
-            "from": user,
-            "chat_instance": "ci_1",
-            "data": cb_data,
-            "message": {
-                "message_id": msg_id,
-                "date": 0,
-                "chat": chat,
-                "from": {"id": 1, "is_bot": True, "first_name": "Bot"},
-                "text": "Studio",
-            },
-        },
-    }
-
-
 class FakeRequest(BaseRequest):
     def __init__(self):
         self.calls = []
         self.failure = None
-        self.sequence = 100
+        self.sequence = 0
 
     async def initialize(self):
         pass
@@ -145,24 +124,12 @@ class FakeRequest(BaseRequest):
                 "can_edit_messages": True,
                 "can_pin_messages": True,
             }
-        elif name in ("pinChatMessage", "deleteMessage", "deleteMessages", "answerCallbackQuery"):
-            self.calls.append((name, params))
-            if self.failure and name not in ("deleteMessage", "deleteMessages", "answerCallbackQuery"):
-                error, self.failure = self.failure, None
-                raise error
-            result = True
-        elif name in (
-            "editMessageText",
-            "editMessageCaption",
-            "editMessageMedia",
-            "editMessageReplyMarkup",
-        ):
+        elif name == "pinChatMessage":
             self.calls.append((name, params))
             if self.failure:
                 error, self.failure = self.failure, None
                 raise error
-            mid = int(params.get("message_id", self.sequence))
-            result = {"message_id": mid, "date": 0, "chat": CHAT, "text": "edited"}
+            result = True
         else:
             self.calls.append((name, params))
             if self.failure:
@@ -172,34 +139,10 @@ class FakeRequest(BaseRequest):
         return 200, json.dumps({"ok": True, "result": result}).encode()
 
 
-def reply_keyboard(call):
+def keyboard(call):
     return [
         [button["text"] for button in row]
         for row in call[1].get("reply_markup", {}).get("keyboard", [])
-    ]
-
-
-def inline_buttons(call):
-    return [
-        [button["text"] for button in row]
-        for row in call[1].get("reply_markup", {}).get("inline_keyboard", [])
-    ]
-
-
-def inline_callbacks(call):
-    return [
-        button.get("callback_data")
-        for row in call[1].get("reply_markup", {}).get("inline_keyboard", [])
-        for button in row
-        if button.get("callback_data")
-    ]
-
-
-def non_delete_calls(calls):
-    return [
-        c
-        for c in calls
-        if c[0] not in ("deleteMessage", "deleteMessages", "answerCallbackQuery")
     ]
 
 
@@ -246,16 +189,6 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         await self.app.process_update(Update.de_json(data, self.app.bot))
         return list(self.transport.calls)
 
-    async def tap(self, cb_data: str, user_id=42):
-        self.transport.calls.clear()
-        self.sequence += 1
-        panel_id = self.app.user_data.get(user_id, {}).get(h.K_PANEL_ID, 10)
-        data = callback_data_payload(
-            self.sequence, cb_data=cb_data, msg_id=panel_id, user_id=user_id
-        )
-        await self.app.process_update(Update.de_json(data, self.app.bot))
-        return list(self.transport.calls)
-
     def store(self):
         return self.app.bot_data["store"]
 
@@ -266,125 +199,89 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         await self.send("/new")
         return await self.send(**(content or {"text": "Original"}))
 
-    async def add_button(self, name="Join Channel", link="@mychannel", color="blue"):
-        await self.tap("st:btn")
+    async def add_button(self, name="Join Channel", link="@mychannel", color="Blue"):
+        await self.send(h.BTN_BUTTON)
         await self.send(name)
         await self.send(link)
-        return await self.tap(f"st:clr:{color.lower()}")
+        return await self.send(color)
 
     async def test_start_has_only_native_create_button(self):
         calls = await self.send("/start")
-        self.assertEqual(reply_keyboard(calls[-1]), [[h.BTN_CREATE]])
+        self.assertEqual(keyboard(calls[-1]), [[h.BTN_CREATE]])
         self.assertNotIn("web_app", json.dumps(calls))
         self.assertIn("\n", calls[-1][1]["text"])
 
-    async def test_gif_in_place_studio_flow_zero_clutter(self):
-        """Reproduces user's exact GIF + text + green button + finish scenario with ZERO duplicate media."""
+    async def test_gif_text_button_finish_flow(self):
         await self.send(h.BTN_CREATE)
-        # 1) Send GIF -> sends GIF preview once + Studio panel below + cleans up user's raw GIF
         calls = await self.send(
             animation=GIF, document={"file_id": "G1", "file_unique_id": "g"}
         )
-        methods = [c[0] for c in calls]
-        self.assertIn("sendAnimation", methods)
-        self.assertIn("deleteMessage", methods)  # user's duplicate message cleaned up!
-        panel_call = [c for c in calls if c[0] in ("sendMessage", "editMessageText")][-1]
-        self.assertIn("st:btn", inline_callbacks(panel_call))
-        self.assertIn("st:done", inline_callbacks(panel_call))
-
-        # 2) Edit text -> edits caption IN PLACE via editMessageCaption (no second GIF sent!)
-        await self.tap("st:text")
+        self.assertEqual(calls[0][0], "sendAnimation")
+        self.assertEqual(keyboard(calls[-1])[0], [h.BTN_TEXT, h.BTN_BUTTON])
+        await self.send(h.BTN_TEXT)
         calls = await self.send("Hello <world> & friends")
-        self.assertNotIn("sendAnimation", [c[0] for c in calls])
-        caption_edit = next(c for c in calls if c[0] == "editMessageCaption")
+        self.assertEqual(calls[0][1]["caption"], "Hello &lt;world&gt; &amp; friends")
+        calls = await self.add_button(color="Green")
         self.assertEqual(
-            caption_edit[1]["caption"], "Hello &lt;world&gt; &amp; friends"
+            calls[0][1]["reply_markup"]["inline_keyboard"],
+            [
+                [
+                    {
+                        "text": "Join Channel",
+                        "url": "https://t.me/mychannel",
+                        "style": "success",
+                    }
+                ]
+            ],
         )
-
-        # 3) Add Green button -> edits reply_markup IN PLACE via editMessageReplyMarkup (no third GIF sent!)
-        calls = await self.add_button(name="Join", link="No.in", color="green")
-        self.assertNotIn("sendAnimation", [c[0] for c in calls])
-        markup_edit = next(c for c in calls if c[0] == "editMessageReplyMarkup")
-        self.assertEqual(
-            markup_edit[1]["reply_markup"]["inline_keyboard"],
-            [[{"text": "Join", "url": "https://no.in", "style": "success"}]],
-        )
-
-        # 4) Tap Finish -> deletes Studio panel, keeps the single clean GIF post in chat!
-        calls = await self.tap("st:done")
-        self.assertNotIn("sendAnimation", [c[0] for c in calls])
-        self.assertIn("deleteMessage", [c[0] for c in calls])
-        final_msg = [c for c in calls if c[0] == "sendMessage"][-1]
-        self.assertIn("Ready to share", final_msg[1]["text"])
+        calls = await self.send(h.BTN_DONE)
+        self.assertEqual(calls[0][0], "sendAnimation")
+        self.assertIn("Ready to share", calls[-1][1]["text"])
         self.assertEqual(dict(self.app.user_data[42]), {})
-        self.assertEqual(reply_keyboard(final_msg), [[h.BTN_CREATE]])
+        self.assertEqual(keyboard(calls[-1]), [[h.BTN_CREATE]])
 
-    async def test_formatted_text_is_preserved_and_edited_in_place(self):
+    async def test_formatted_text_is_preserved_and_replaced(self):
         calls = await self.draft(
             text="Title", entities=[{"type": "bold", "offset": 0, "length": 5}]
         )
-        sent_preview = next(c for c in calls if c[0] == "sendMessage")
-        self.assertEqual(sent_preview[1]["text"], "<b>Title</b>")
-        await self.tap("st:text")
-        calls = await self.send("Replacement")
-        # Edited in place using editMessageText on the preview message ID!
-        preview_id = self.app.user_data[42][h.K_PREVIEW_IDS][0]
-        text_edits = [
-            c
-            for c in calls
-            if c[0] == "editMessageText" and int(c[1]["message_id"]) == preview_id
-        ]
-        self.assertEqual(len(text_edits), 1)
-        self.assertEqual(text_edits[0][1]["text"], "Replacement")
+        self.assertEqual(calls[0][1]["text"], "<b>Title</b>")
+        await self.send(h.BTN_TEXT)
+        await self.send("Replacement")
         self.assertEqual(self.post().text, "Replacement")
 
-    async def test_photo_caption_and_in_place_media_replacement(self):
+    async def test_photo_caption_and_media_replacement(self):
         calls = await self.draft(photo=PHOTO, caption="Original")
-        photo_call = next(c for c in calls if c[0] == "sendPhoto")
-        self.assertEqual(photo_call[1]["caption"], "Original")
-
-        # Replacing photo with video edits media in place via editMessageMedia!
-        calls = await self.send(video={**GIF, "file_id": "V1"})
-        self.assertIn("editMessageMedia", [c[0] for c in calls])
+        self.assertEqual(calls[0][1]["caption"], "Original")
+        await self.send(video={**GIF, "file_id": "V1"})
         self.assertEqual(
             (self.post().media_type, self.post().text), ("video", "Original")
         )
-
-        calls = await self.send(photo=PHOTO, caption="New caption")
-        self.assertIn("editMessageMedia", [c[0] for c in calls])
+        await self.send(photo=PHOTO, caption="New caption")
         self.assertEqual(self.post().text, "New caption")
 
     async def test_sticker_text_is_delivered_separately(self):
         calls = await self.draft(sticker=STICKER)
-        self.assertIn("sendSticker", [c[0] for c in calls])
-        await self.tap("st:text")
+        self.assertEqual(calls[0][0], "sendSticker")
+        await self.send(h.BTN_TEXT)
         calls = await self.send("Hello")
-        # Transition from single sticker to split sticker + text sends clean pair and deletes old sticker
-        methods = [c[0] for c in calls]
-        self.assertIn("sendSticker", methods)
-        self.assertIn("sendMessage", methods)
+        self.assertEqual(
+            [c[0] for c in calls], ["sendSticker", "sendMessage", "sendMessage"]
+        )
 
     async def test_caption_boundary_and_long_caption_split(self):
         await self.draft(photo=PHOTO)
-        await self.tap("st:text")
-        calls = await self.send("a" * CAPTION_LIMIT)
-        caption_edit = next(c for c in calls if c[0] == "editMessageCaption")
-        self.assertEqual(len(caption_edit[1]["caption"]), CAPTION_LIMIT)
-
-        await self.tap("st:text")
-        calls = await self.send("a" * (CAPTION_LIMIT + 1))
-        # Exceeds 1024 -> splits into uncaptioned photo + separate text message
-        photo_call = next(c for c in calls if c[0] == "sendPhoto")
-        self.assertNotIn("caption", photo_call[1])
-        self.assertEqual(len(self.app.user_data[42][h.K_PREVIEW_IDS]), 2)
+        for length in (CAPTION_LIMIT, CAPTION_LIMIT + 1):
+            await self.send(h.BTN_TEXT)
+            calls = await self.send("a" * length)
+            self.assertEqual("caption" in calls[0][1], length <= CAPTION_LIMIT)
+            self.assertEqual(len(calls), 2 if length <= CAPTION_LIMIT else 3)
 
     async def test_over_limit_text_does_not_replace_draft(self):
         await self.draft()
-        await self.tap("st:text")
+        await self.send(h.BTN_TEXT)
         for text in ("a" * (TEXT_LIMIT + 1), "\U0001f600" * (TEXT_LIMIT // 2 + 1)):
             calls = await self.send(text)
-            active = non_delete_calls(calls)
-            self.assertIn("too long", active[-1][1]["text"])
+            self.assertIn("too long", calls[-1][1]["text"])
             self.assertEqual(self.post().text, "Original")
         await self.send("a" * TEXT_LIMIT)
         self.assertEqual(len(self.post().text), TEXT_LIMIT)
@@ -392,51 +289,41 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_invalid_caption_is_transactional(self):
         await self.draft(photo=PHOTO, caption="Original")
         calls = await self.send(animation=GIF, caption="a" * (TEXT_LIMIT + 1))
-        active = non_delete_calls(calls)
-        self.assertIn("too long", active[-1][1]["text"])
+        self.assertIn("too long", calls[-1][1]["text"])
         self.assertEqual(self.post().media_type, "photo")
         self.assertEqual(self.post().text, "Original")
 
     async def test_invalid_label_link_colour_and_back(self):
         await self.draft()
-        await self.tap("st:btn")
+        await self.send(h.BTN_BUTTON)
         await self.send("x" * 65)
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_NAME)
         await self.send("Join")
         calls = await self.send("https://[broken")
-        active = non_delete_calls(calls)
-        self.assertIn("valid", active[-1][1]["text"].lower())
+        self.assertIn("valid link", calls[-1][1]["text"])
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_LINK)
         await self.send("example.com")
         await self.send("Purple")
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_COLOR)
-        await self.tap("st:back")
+        await self.send("/back")
         self.assertNotIn(h.K_DRAFT, self.app.user_data[42])
         self.assertEqual(self.post().text, "Original")
         self.assertEqual(self.post().buttons, [])
 
-    async def test_button_limit_and_inline_button_manager(self):
+    async def test_button_limit_and_remove_last(self):
         await self.draft()
         for i in range(MAX_BUTTONS):
-            await self.add_button(name=f"Link {i}", color="red")
+            await self.add_button(name=f"Link {i}", color="Red")
+        calls = await self.send(h.BTN_BUTTON)
         self.assertEqual(len(self.post().buttons), MAX_BUTTONS)
-
-        # At 10 buttons, st:btn is hidden from Studio keyboard
-        calls = await self.tap("st:back")
-        panel_call = non_delete_calls(calls)[-1]
-        self.assertNotIn("st:btn", inline_callbacks(panel_call))
-
-        # Open interactive Buttons Manager: cycle colour & delete a specific button
-        calls = await self.tap("st:btns")
-        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BUTTONS)
-        await self.tap("st:bcol:0")
-        self.assertEqual(self.post().buttons[0]["color"], "blue")  # cycled red -> blue
-        await self.tap("st:bdel:0")
+        self.assertNotIn(
+            h.BTN_BUTTON, [label for row in keyboard(calls[-1]) for label in row]
+        )
+        calls = await self.send(h.BTN_REMOVE)
         self.assertEqual(len(self.post().buttons), MAX_BUTTONS - 1)
-
-        calls = await self.tap("st:back")
-        panel_call = non_delete_calls(calls)[-1]
-        self.assertIn("st:btn", inline_callbacks(panel_call))
+        self.assertIn(
+            h.BTN_BUTTON, [label for row in keyboard(calls[-1]) for label in row]
+        )
 
     async def test_commands_and_user_isolation(self):
         await self.draft()
@@ -453,15 +340,14 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_labels_are_content_inside_edit_steps(self):
         await self.draft(text=h.BTN_CREATE)
         self.assertEqual(self.post().text, h.BTN_CREATE)
-        await self.tap("st:text")
+        await self.send(h.BTN_TEXT)
         await self.send(h.BTN_DONE)
         self.assertEqual(self.post().text, h.BTN_DONE)
 
     async def test_unsupported_media_and_empty_preview(self):
         await self.send("/preview")
         calls = await self.send(location={"latitude": 1.0, "longitude": 2.0})
-        active = non_delete_calls(calls)
-        self.assertIn("Send text", active[-1][1]["text"])
+        self.assertIn("Send text", calls[-1][1]["text"])
         self.assertTrue(self.post().is_empty())
         await self.send("/back")
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MEDIA)
@@ -485,28 +371,28 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
                 calls = await self.send("Keep me")
                 self.assertEqual(self.post().text, "Keep me")
                 self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MENU)
-                active = non_delete_calls(calls)
-                self.assertIn("saved", active[-1][1]["text"])
-                self.assertIn("st:done", inline_callbacks(active[-1]))
+                self.assertIn("saved", calls[-1][1]["text"])
+                self.assertIn(
+                    h.BTN_PREVIEW,
+                    [label for row in keyboard(calls[-1]) for label in row],
+                )
 
-    async def test_failed_protected_finish_does_not_discard_draft(self):
+    async def test_failed_finish_does_not_discard_draft(self):
         await self.draft()
-        await self.send("/protect")
         self.transport.failure = NetworkError("offline")
-        calls = await self.tap("st:done")
+        calls = await self.send(h.BTN_DONE)
         self.assertEqual(self.post().text, "Original")
-        active = non_delete_calls(calls)
-        self.assertIn("before retrying", active[-1][1]["text"])
-        await self.tap("st:done")
+        self.assertIn("before retrying", calls[-1][1]["text"])
+        await self.send(h.BTN_DONE)
         self.assertEqual(dict(self.app.user_data[42]), {})
 
     async def test_rejected_button_can_be_removed(self):
         await self.draft()
-        await self.tap("st:btn")
+        await self.send(h.BTN_BUTTON)
         await self.send("Website")
         await self.send("example.com")
         self.transport.failure = BadRequest("invalid button")
-        await self.tap("st:clr:blue")
+        await self.send("Blue")
         self.assertEqual(len(self.post().buttons), 1)
         await self.send(h.BTN_REMOVE)
         self.assertEqual(self.post().buttons, [])
@@ -521,22 +407,13 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("setChatMenuButton", [c[0] for c in calls])
         self.assertNotIn("My profile", json.dumps(calls))
 
-    async def test_studio_inline_controls_and_options_panel(self):
-        await self.draft(photo=PHOTO, caption="Hello")
-        calls = await self.tap("st:opts")
-        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_OPTIONS)
-        cbs = inline_callbacks(non_delete_calls(calls)[-1])
-        self.assertIn("st:tog:sp", cbs)
-        self.assertIn("st:tog:cap", cbs)
-        self.assertIn("st:tog:prot", cbs)
-        self.assertIn("st:tog:sil", cbs)
-
-        await self.tap("st:tog:sp")
-        self.assertTrue(self.post().spoiler)
-        await self.tap("st:tog:cap")
-        self.assertTrue(self.post().caption_above)
-        await self.tap("st:back")
-        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MENU)
+    async def test_keyboards_keep_the_same_buttons(self):
+        await self.draft()
+        calls = await self.add_button()
+        self.assertEqual(
+            keyboard(calls[-1]),
+            [[h.BTN_TEXT, h.BTN_BUTTON], [h.BTN_PREVIEW, h.BTN_DONE], [h.BTN_REMOVE]],
+        )
 
     async def test_old_plain_labels_still_work(self):
         await self.draft()
@@ -549,12 +426,11 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_quick_multi_button_entry(self):
         await self.draft()
-        await self.tap("st:btn")
+        await self.send(h.BTN_BUTTON)
         calls = await self.send("Join Channel - @mychannel\nWebsite | example.com")
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_BTN_COLOR)
-        active = non_delete_calls(calls)
-        self.assertIn("Join Channel", active[-1][1]["text"])
-        await self.tap("st:clr:red")
+        self.assertIn("Join Channel", calls[-1][1]["text"])
+        await self.send("🔴 Red")
         self.assertEqual(
             self.post().buttons,
             [
@@ -566,7 +442,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_quick_button_from_editor_menu(self):
         await self.draft()
         await self.send("Shop - example.com/shop")
-        await self.tap("st:clr:blue")
+        await self.send("Blue")
         self.assertEqual(self.post().buttons[0]["url"], "https://example.com/shop")
 
     async def test_forwarded_post_imports_buttons(self):
@@ -593,45 +469,36 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(kind=kind):
                 calls = await self.draft(**{kind: payload, "caption": "Hi"})
-                media_call = next(c for c in calls if c[0] == method)
-                self.assertEqual(media_call[1]["caption"], "Hi")
+                self.assertEqual(calls[0][0], method)
+                self.assertEqual(calls[0][1]["caption"], "Hi")
         calls = await self.draft(
             video_note={"file_id": "N1", "file_unique_id": "n", "length": 1, "duration": 1}
         )
-        self.assertIn("sendVideoNote", [c[0] for c in calls])
+        self.assertEqual(calls[0][0], "sendVideoNote")
 
-    async def test_save_list_open_delete_templates_and_inline_callbacks(self):
+    async def test_save_list_open_delete_templates(self):
         await self.draft(text="Promo text")
         await self.add_button()
-        calls = await self.tap("st:save")
-        active = non_delete_calls(calls)
-        self.assertIn("Promo text", active[-1][1]["text"])
+        calls = await self.send("/save Promo")
+        self.assertIn("Promo</b> saved", calls[-1][1]["text"])
         post_id = next(iter(self.store().posts))
-        calls = await self.send("/save Promo text")
-        active = non_delete_calls(calls)
-        self.assertIn("updated", active[-1][1]["text"])
+        calls = await self.send("/save Promo")
+        self.assertIn("updated", calls[-1][1]["text"])
         self.assertEqual(len(self.store().posts), 1)
-        await self.tap("st:cancel")
-
+        await self.send("/cancel")
         calls = await self.send("/posts")
         self.assertIn(f"/open_{post_id}", calls[-1][1]["text"])
-        self.assertIn(f"tpl:open:{post_id}", inline_callbacks(calls[-1]))
-
-        # Open via inline template button
-        calls = await self.tap(f"tpl:open:{post_id}")
-        sent_preview = next(c for c in calls if c[0] == "sendMessage")
-        self.assertEqual(sent_preview[1]["text"], "Promo text")
+        calls = await self.send(f"/open_{post_id}")
+        self.assertEqual(calls[0][1]["text"], "Promo text")
         self.assertEqual(len(self.post().buttons), 1)
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MENU)
-
         # Other users cannot open or delete it.
         calls = await self.send(f"/open_{post_id}", user_id=77)
         self.assertIn("doesn't exist", calls[-1][1]["text"])
         calls = await self.send(f"/del_{post_id}", user_id=77)
         self.assertIn("doesn't exist", calls[-1][1]["text"])
-
-        # Delete via inline template button
-        await self.tap(f"tpl:del:{post_id}")
+        calls = await self.send(f"/del_{post_id}")
+        self.assertIn("deleted", calls[-1][1]["text"])
         self.assertEqual(self.store().posts, {})
 
     async def test_save_requires_draft_and_respects_limit(self):
@@ -654,9 +521,8 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_finish_counts_posts_and_stats(self):
         await self.draft()
-        calls = await self.tap("st:done")
-        msg = [c for c in calls if c[0] == "sendMessage"][-1]
-        self.assertIn("<b>#1</b>", msg[1]["text"])
+        calls = await self.send(h.BTN_DONE)
+        self.assertIn("post <b>#1</b>", calls[-1][1]["text"])
         calls = await self.send("/stats")
         self.assertIn("Posts created: <b>1</b>", calls[-1][1]["text"])
         calls = await self.send("/start")
@@ -667,6 +533,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.store().sessions[42]["post"]["text"], "Survives restart"
         )
+        # Simulate a restart: fresh in-memory state, same store.
         store = self.store()
         self.app.user_data[42].clear()
         self.app.bot_data.clear()
@@ -676,20 +543,14 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         await self.send("/cancel")
         self.assertNotIn(42, store.sessions)
 
-    async def test_link_preview_toggle_in_place(self):
+    async def test_link_preview_toggle(self):
         await self.draft(text="https://example.com")
-        preview_id = self.app.user_data[42][h.K_PREVIEW_IDS][0]
         calls = await self.send("/linkpreview")
-        edited = [
-            c
-            for c in calls
-            if c[0] == "editMessageText" and int(c[1]["message_id"]) == preview_id
-        ]
-        self.assertEqual(len(edited), 1)
-        self.assertTrue(edited[0][1]["link_preview_options"]["is_disabled"])
+        sent = [c for c in calls if c[0] == "sendMessage" and c[1]["text"] == "https://example.com"]
+        self.assertTrue(sent[0][1]["link_preview_options"]["is_disabled"])
         self.assertFalse(self.post().link_preview)
 
-    async def test_channel_and_one_tap_publish(self):
+    async def test_channel_and_publish(self):
         calls = await self.send("/publish")
         self.assertIn("Nothing to publish", calls[-1][1]["text"])
         await self.draft()
@@ -697,22 +558,17 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No channel set", calls[-1][1]["text"])
         self.assertEqual(self.post().text, "Original")
         await self.store().update_profile(42, default_channel="@mychannel")
-        # Studio now offers 1-tap 🚀 Publish callback!
-        calls = await self.tap("st:pub")
-        chan_call = next(
-            c for c in calls if c[0] == "sendMessage" and c[1].get("chat_id") == "@mychannel"
-        )
-        self.assertEqual(chan_call[1]["text"], "Original")
-        final_msg = [c for c in calls if c[0] == "sendMessage" and c[1].get("chat_id") != "@mychannel"][-1]
-        self.assertIn("t.me/mychannel/", final_msg[1]["text"])
+        calls = await self.send("/publish")
+        self.assertEqual(calls[0][0], "sendMessage")
+        self.assertEqual(calls[0][1]["chat_id"], "@mychannel")
+        self.assertIn("t.me/mychannel/", calls[-1][1]["text"])
         self.assertNotIn(h.K_POST, self.app.user_data[42])
 
     async def test_publish_failure_keeps_draft(self):
         await self.draft()
         self.transport.failure = Forbidden("not admin")
         calls = await self.send("/publish @mychannel")
-        active = non_delete_calls(calls)
-        self.assertIn("admin", active[-1][1]["text"])
+        self.assertIn("admin", calls[-1][1]["text"])
         self.assertEqual(self.post().text, "Original")
 
     async def test_channel_command_validation(self):
@@ -733,33 +589,22 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_layout_columns_and_side_by_side_buttons(self):
         await self.draft(text="Grid post")
-        preview_id = self.app.user_data[42][h.K_PREVIEW_IDS][0]
         await self.send(
             "Join - @mychannel && Website | example.com\nSupport - https://t.me/+AbCdEf1234"
         )
-        calls = await self.tap("st:clr:blue")
-        edit_call = next(
-            c
-            for c in calls
-            if c[0] == "editMessageText" and int(c[1]["message_id"]) == preview_id
-        )
-        kb = edit_call[1]["reply_markup"]["inline_keyboard"]
+        await self.send("Blue")
+        calls = await self.send("/preview")
+        kb = calls[0][1]["reply_markup"]["inline_keyboard"]
         self.assertEqual(len(kb), 2)
         self.assertEqual([b["text"] for b in kb[0]], ["Join", "Website"])
         self.assertEqual([b["text"] for b in kb[1]], ["Support"])
-
         calls = await self.send("/layout 3")
-        edit_call = next(
-            c
-            for c in calls
-            if c[0] == "editMessageText" and int(c[1]["message_id"]) == preview_id
-        )
-        kb = edit_call[1]["reply_markup"]["inline_keyboard"]
+        kb = calls[1][1]["reply_markup"]["inline_keyboard"]
         self.assertEqual(len(kb), 1)
         self.assertEqual(len(kb[0]), 3)
-
-        await self.tap("st:lay")
+        calls = await self.send("/layout")
         self.assertEqual(self.post().columns, 1)
+        self.assertEqual(keyboard(calls[-1]), [[h.BTN_TEXT, h.BTN_BUTTON], [h.BTN_PREVIEW, h.BTN_DONE], [h.BTN_REMOVE]])
 
     async def test_spoiler_caption_protect_and_silent_options(self):
         await self.draft(text="Text only")
@@ -769,32 +614,29 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         await self.send("/spoiler")
         await self.send("/caption")
         await self.send("/protect")
-        await self.send("/silent")
-
-        # Protected post must send a fresh protected copy on Finish (since preview is unprotected)
-        calls = await self.tap("st:done")
+        calls = await self.send("/silent")
         media_call = next(c for c in calls if c[0] == "sendPhoto")
         self.assertTrue(media_call[1]["has_spoiler"])
         self.assertTrue(media_call[1]["show_caption_above_media"])
         self.assertTrue(media_call[1]["protect_content"])
         self.assertTrue(media_call[1]["disable_notification"])
-        final_msg = [c for c in calls if c[0] == "sendMessage"][-1]
-        self.assertIn("Forwarding protection", final_msg[1]["text"])
+        calls = await self.send(h.BTN_DONE)
+        self.assertIn("Forwarding protection", calls[-1][1]["text"])
 
     async def test_undo_and_clear_parts(self):
         await self.draft(photo=PHOTO, caption="Hello")
-        await self.add_button(name="Site", link="example.com", color="green")
-        await self.tap("st:rm:buttons")
+        await self.add_button(name="Site", link="example.com", color="Green")
+        await self.send("/clear buttons")
         self.assertEqual(self.post().buttons, [])
-        await self.tap("st:undo")
+        await self.send("/undo")
         self.assertEqual(len(self.post().buttons), 1)
-        await self.tap("st:rm:text")
+        await self.send("/clear text")
         self.assertEqual(self.post().text, "")
         self.assertEqual(self.post().media_type, "photo")
-        await self.tap("st:rm:media")
+        await self.send("/clear media")
         self.assertEqual(len(self.post().buttons), 1)
         self.assertIsNone(self.post().media_type)
-        await self.tap("st:rm:buttons")
+        await self.send("/clear buttons")
         self.assertTrue(self.post().is_empty())
         self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MEDIA)
         await self.send("/undo")
@@ -807,8 +649,7 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         methods = [c[0] for c in calls]
         self.assertIn("sendMessage", methods)
         self.assertIn("pinChatMessage", methods)
-        final_msg = [c for c in calls if c[0] == "sendMessage"][-1]
-        self.assertIn("Pinned", final_msg[1]["text"])
+        self.assertIn("Pinned", calls[-1][1]["text"])
 
     async def test_instant_media_start_from_idle(self):
         calls = await self.send(photo=PHOTO, caption="Instant draft")
@@ -1026,12 +867,6 @@ class WebhookTests(unittest.IsolatedAsyncioTestCase):
             self.application.update_queue.get_nowait().message.text, "hello"
         )
 
-    async def test_valid_callback_query_update(self):
-        payload = callback_data_payload(update_id=55, cb_data="st:done")
-        self.assertEqual((await self.request(data=payload)).status, 200)
-        upd = self.application.update_queue.get_nowait()
-        self.assertEqual(upd.callback_query.data, "st:done")
-
     async def test_queue_backpressure_allows_retry(self):
         self.assertEqual((await self.request(data=update_data(1))).status, 200)
         response = await self.request(data=update_data(2))
@@ -1052,8 +887,6 @@ class WebhookTests(unittest.IsolatedAsyncioTestCase):
             {"update_id": 1},
             {"update_id": 1, "message": "bad"},
             {"update_id": 1, "message": {}},
-            {"update_id": 1, "callback_query": {}},
-            {"update_id": 1, "callback_query": {"id": "", "from": USER}},
             update_data(chat={}),
             update_data(date="bad"),
             update_data(photo=[{}]),
@@ -1219,10 +1052,6 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         )
         if webhook:
             application.bot.set_webhook.assert_awaited_once()
-            self.assertEqual(
-                application.bot.set_webhook.call_args.kwargs["allowed_updates"],
-                ["message", "callback_query"],
-            )
             self.assertFalse(
                 application.bot.set_webhook.call_args.kwargs["drop_pending_updates"]
             )
@@ -1232,10 +1061,6 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 drop_pending_updates=False
             )
             application.updater.start_polling.assert_awaited_once()
-            self.assertEqual(
-                application.updater.start_polling.call_args.kwargs["allowed_updates"],
-                ["message", "callback_query"],
-            )
             application.updater.stop.assert_awaited_once()
 
     async def test_webhook_startup_and_shutdown(self):

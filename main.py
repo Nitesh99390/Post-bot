@@ -49,42 +49,21 @@ def build_web_app(application: Application) -> web.Application:
             ):
                 return web.Response(status=400)
             message = data.get("message")
-            cb = data.get("callback_query")
-            if isinstance(message, dict) and cb is None:
-                chat, sender = message.get("chat"), message.get("from")
-                if (
-                    type(message.get("message_id")) is not int
-                    or type(message.get("date")) is not int
-                    or not isinstance(chat, dict)
-                    or type(chat.get("id")) is not int
-                ):
+            if not isinstance(message, dict):
+                return web.Response(status=400)
+            chat, sender = message.get("chat"), message.get("from")
+            if (
+                type(message.get("message_id")) is not int
+                or type(message.get("date")) is not int
+                or not isinstance(chat, dict)
+                or type(chat.get("id")) is not int
+            ):
+                return web.Response(status=400)
+            if sender is None:
+                if chat.get("type") != "channel":
                     return web.Response(status=400)
-                if sender is None:
-                    if chat.get("type") != "channel":
-                        return web.Response(status=400)
-                    return web.Response(text="ok")
-                if not isinstance(sender, dict) or type(sender.get("id")) is not int:
-                    return web.Response(status=400)
-            elif isinstance(cb, dict) and message is None:
-                sender = cb.get("from")
-                cb_msg = cb.get("message")
-                if (
-                    not isinstance(cb.get("id"), str)
-                    or not cb["id"]
-                    or not isinstance(sender, dict)
-                    or type(sender.get("id")) is not int
-                ):
-                    return web.Response(status=400)
-                if cb_msg is not None:
-                    chat = cb_msg.get("chat") if isinstance(cb_msg, dict) else None
-                    if (
-                        not isinstance(cb_msg, dict)
-                        or type(cb_msg.get("message_id")) is not int
-                        or not isinstance(chat, dict)
-                        or type(chat.get("id")) is not int
-                    ):
-                        return web.Response(status=400)
-            else:
+                return web.Response(text="ok")
+            if not isinstance(sender, dict) or type(sender.get("id")) is not int:
                 return web.Response(status=400)
             update = Update.de_json(data, application.bot)
         except (
@@ -155,7 +134,7 @@ async def run() -> None:
                     await application.bot.set_webhook(
                         url=config.BASE_URL + config.WEBHOOK_PATH,
                         secret_token=config.webhook_secret(),
-                        allowed_updates=["message", "callback_query"],
+                        allowed_updates=["message"],
                         max_connections=10,
                         drop_pending_updates=False,
                     )
@@ -163,8 +142,7 @@ async def run() -> None:
                 else:
                     await application.bot.delete_webhook(drop_pending_updates=False)
                     await application.updater.start_polling(
-                        allowed_updates=["message", "callback_query"],
-                        drop_pending_updates=False,
+                        allowed_updates=["message"], drop_pending_updates=False
                     )
                     logger.info("Polling mode enabled")
                 logger.info("Bot ready")

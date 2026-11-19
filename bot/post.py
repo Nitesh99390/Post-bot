@@ -10,16 +10,10 @@ from telegram import (
     Bot,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    InputMediaAnimation,
-    InputMediaAudio,
-    InputMediaDocument,
-    InputMediaPhoto,
-    InputMediaVideo,
     LinkPreviewOptions,
     Message,
 )
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, TelegramError
 
 COLORS = {
     "blue": ("🔵 Blue", "primary"),
@@ -54,13 +48,6 @@ MEDIA_ICONS = {
 }
 NO_CAPTION = {"sticker", "video_note"}
 SPOILER_MEDIA = {"photo", "video", "animation"}
-EDITABLE_MEDIA = {
-    "photo": InputMediaPhoto,
-    "video": InputMediaVideo,
-    "animation": InputMediaAnimation,
-    "audio": InputMediaAudio,
-    "document": InputMediaDocument,
-}
 MEDIA_ORDER = (
     "animation",
     "sticker",
@@ -303,9 +290,9 @@ class Post:
         parts.extend(flags)
         return "  ·  ".join(parts)
 
-    def button_rows(self) -> list[list[InlineKeyboardButton]]:
+    def keyboard(self) -> InlineKeyboardMarkup | None:
         if not self.buttons:
-            return []
+            return None
         rows: list[list[InlineKeyboardButton]] = []
         has_explicit_rows = any(b.get("same_row") for b in self.buttons)
         if has_explicit_rows and self.columns == 1:
@@ -328,47 +315,22 @@ class Post:
                         for b in self.buttons[i : i + step]
                     ]
                 )
-        return rows
+        return InlineKeyboardMarkup(rows)
 
-    def keyboard(self) -> InlineKeyboardMarkup | None:
-        rows = self.button_rows()
-        return InlineKeyboardMarkup(rows) if rows else None
-
-    def build_input_media(self, *, body: str = "", preview_mode: bool = False) -> Any | None:
-        cls = EDITABLE_MEDIA.get(self.media_type or "")
-        if cls is None or not self.file_id:
-            return None
-        kwargs: dict[str, Any] = {
-            "media": self.file_id,
-            "caption": body or None,
-            "parse_mode": ParseMode.HTML,
-        }
-        if self.supports_spoiler():
-            kwargs["has_spoiler"] = bool(self.spoiler)
-        if self.supports_caption_above():
-            kwargs["show_caption_above_media"] = bool(self.caption_above and body)
-        return cls(**kwargs)
-
-    async def send_all(
-        self,
-        bot: Bot,
-        chat_id: int | str,
-        *,
-        silent: bool | None = None,
-        protect: bool | None = None,
-    ) -> list[Message]:
+    async def send(
+        self, bot: Bot, chat_id: int | str, *, silent: bool | None = None
+    ) -> Message | None:
         self.validate()
         if self.is_empty():
-            return []
+            return None
         body = self.text.strip() if self.plain_text() else ""
         keyboard = self.keyboard()
         preview = None if self.link_preview else LinkPreviewOptions(is_disabled=True)
         use_silent = self.silent if silent is None else silent
-        use_protect = self.protect if protect is None else protect
         extra: dict[str, Any] = {}
         if use_silent:
             extra["disable_notification"] = True
-        if use_protect:
+        if self.protect:
             extra["protect_content"] = True
 
         media_extra = dict(extra)
@@ -388,17 +350,16 @@ class Post:
             )
 
         if self.media_type is None:
-            return [await send_text(body or "View details")]
+            return await send_text(body or "View details")
         if self.media_type in NO_CAPTION:
             sender = {
                 "sticker": bot.send_sticker,
                 "video_note": bot.send_video_note,
             }[self.media_type]
             if not body:
-                return [await sender(chat_id, self.file_id, reply_markup=keyboard, **extra)]
-            first = await sender(chat_id, self.file_id, **extra)
-            second = await send_text(body)
-            return [first, second]
+                return await sender(chat_id, self.file_id, reply_markup=keyboard, **extra)
+            await sender(chat_id, self.file_id, **extra)
+            return await send_text(body)
         sender = {
             "photo": bot.send_photo,
             "video": bot.send_video,
@@ -408,7 +369,7 @@ class Post:
             "document": bot.send_document,
         }[self.media_type]
         if plain_len(body) <= CAPTION_LIMIT:
-            msg = await sender(
+            return await sender(
                 chat_id,
                 self.file_id,
                 caption=body or None,
@@ -416,202 +377,11 @@ class Post:
                 parse_mode=ParseMode.HTML,
                 **media_extra,
             )
-            return [msg]
         split_extra = dict(extra)
         if self.spoiler and self.supports_spoiler():
             split_extra["has_spoiler"] = True
-        first = await sender(chat_id, self.file_id, **split_extra)
-        second = await send_text(body)
-        return [first, second]
-
-    async def send(
-        self, bot: Bot, chat_id: int | str, *, silent: bool | None = None
-    ) -> Message | None:
-        sent = await self.send_all(bot, chat_id, silent=silent)
-        return sent[-1] if sent else None
-
-    async def sync_preview(
-        self,
-        bot: Bot,
-        chat_id: int,
-        prev_ids: list[int],
-        prev_meta: dict[str, Any] | None,
-    ) -> tuple[list[int], dict[str, Any]]:
-        """Update existing preview message(s) in place when Telegram allows, else cleanly replace."""
-        self.validate()
-        if self.is_empty():
-            return [], {}
-        body = self.text.strip() if self.plain_text() else ""
-        display_text = body or "View details"
-        keyboard = self.keyboard()
-        preview = LinkPreviewOptions(is_disabled=not self.link_preview)
-        split = self.splits_text()
-        current_meta = {
-            "media_type": self.media_type,
-            "file_id": self.file_id,
-            "body": body,
-            "split": split,
-            "spoiler": bool(self.spoiler and self.supports_spoiler()),
-            "caption_above": bool(
-                self.caption_above and self.supports_caption_above() and body
-            ),
-            "link_preview": bool(self.link_preview),
-            "buttons": deepcopy_buttons(self.buttons),
-            "columns": self.columns,
-        }
-
-        if prev_ids and prev_meta:
-            if prev_meta == current_meta:
-                return list(prev_ids), current_meta
-            edited = await self._try_edit_in_place(
-                bot, chat_id, prev_ids, prev_meta, current_meta, display_text, keyboard, preview
-            )
-            if edited:
-                return list(prev_ids), current_meta
-
-        # Send new preview first so if Telegram rejects it, old preview stays untouched
-        sent = await self.send_all(bot, chat_id, silent=True, protect=False)
-        new_ids = [m.message_id for m in sent]
-        if prev_ids:
-            await delete_quietly(bot, chat_id, prev_ids)
-        return new_ids, current_meta
-
-    async def _try_edit_in_place(
-        self,
-        bot: Bot,
-        chat_id: int,
-        prev_ids: list[int],
-        prev_meta: dict[str, Any],
-        curr_meta: dict[str, Any],
-        display_text: str,
-        keyboard: InlineKeyboardMarkup | None,
-        preview: LinkPreviewOptions,
-    ) -> bool:
-        try:
-            # Case 1: Text-only -> Text-only (single message)
-            if (
-                prev_meta.get("media_type") is None
-                and self.media_type is None
-                and len(prev_ids) == 1
-            ):
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=prev_ids[0],
-                    text=display_text,
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=keyboard,
-                    link_preview_options=preview,
-                )
-                return True
-
-            # Case 2: Single media message -> Single media message (no split)
-            if (
-                not prev_meta.get("split")
-                and not curr_meta["split"]
-                and prev_meta.get("media_type") is not None
-                and self.media_type is not None
-                and len(prev_ids) == 1
-            ):
-                same_file = (
-                    prev_meta.get("media_type") == self.media_type
-                    and prev_meta.get("file_id") == self.file_id
-                    and prev_meta.get("spoiler") == curr_meta["spoiler"]
-                )
-                if same_file and self.media_type in NO_CAPTION:
-                    await bot.edit_message_reply_markup(
-                        chat_id=chat_id,
-                        message_id=prev_ids[0],
-                        reply_markup=keyboard,
-                    )
-                    return True
-                if same_file and self.media_type not in NO_CAPTION:
-                    if (
-                        prev_meta.get("body") == curr_meta["body"]
-                        and prev_meta.get("caption_above") == curr_meta["caption_above"]
-                    ):
-                        await bot.edit_message_reply_markup(
-                            chat_id=chat_id,
-                            message_id=prev_ids[0],
-                            reply_markup=keyboard,
-                        )
-                        return True
-                    caption_kwargs: dict[str, Any] = {
-                        "chat_id": chat_id,
-                        "message_id": prev_ids[0],
-                        "caption": curr_meta["body"] or None,
-                        "parse_mode": ParseMode.HTML,
-                        "reply_markup": keyboard,
-                    }
-                    if self.supports_caption_above():
-                        caption_kwargs["show_caption_above_media"] = curr_meta[
-                            "caption_above"
-                        ]
-                    await bot.edit_message_caption(**caption_kwargs)
-                    return True
-                # Media changed or spoiler toggled between editable media types
-                if (
-                    prev_meta.get("media_type") in EDITABLE_MEDIA
-                    and self.media_type in EDITABLE_MEDIA
-                ):
-                    input_media = self.build_input_media(body=curr_meta["body"])
-                    if input_media is not None:
-                        await bot.edit_message_media(
-                            chat_id=chat_id,
-                            message_id=prev_ids[0],
-                            media=input_media,
-                            reply_markup=keyboard,
-                        )
-                        return True
-
-            # Case 3: Split media + text -> Same media + updated text/buttons
-            if (
-                prev_meta.get("split")
-                and curr_meta["split"]
-                and len(prev_ids) == 2
-                and prev_meta.get("media_type") == self.media_type
-                and prev_meta.get("file_id") == self.file_id
-                and prev_meta.get("spoiler") == curr_meta["spoiler"]
-            ):
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=prev_ids[1],
-                    text=curr_meta["body"],
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=keyboard,
-                    link_preview_options=preview,
-                )
-                return True
-        except BadRequest as error:
-            if "message is not modified" in str(error).lower():
-                return True
-            return False
-        except TelegramError:
-            return False
-        return False
-
-
-def deepcopy_buttons(buttons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [dict(b) for b in buttons]
-
-
-async def delete_quietly(bot: Bot, chat_id: int, message_ids: list[int]) -> None:
-    ids = [mid for mid in dict.fromkeys(message_ids) if isinstance(mid, int) and mid > 0]
-    if not ids:
-        return
-    if len(ids) == 1:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=ids[0])
-        except TelegramError:
-            pass
-        return
-    try:
-        await bot.delete_messages(chat_id=chat_id, message_ids=ids)
-    except TelegramError:
-        for mid in ids:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=mid)
-            except TelegramError:
-                pass
+        await sender(chat_id, self.file_id, **split_extra)
+        return await send_text(body)
 
 
 def extract_media(message: Message) -> tuple[str | None, str | None]:
