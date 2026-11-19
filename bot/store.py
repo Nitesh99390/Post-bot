@@ -1,15 +1,8 @@
-"""Persistence for drafts, saved posts and user stats.
-
-``SupabaseStore`` talks to Supabase's REST API (PostgREST) with httpx, which is
-already installed as a python-telegram-bot dependency. ``MemoryStore`` keeps
-the same interface in-process and is used for tests or when Supabase is not
-reachable, so the bot never stops working because of storage.
-"""
-
 from __future__ import annotations
 
 import logging
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,7 +14,7 @@ MAX_NAME = 40
 
 
 class StoreError(RuntimeError):
-    """Raised when the storage backend cannot complete a request."""
+    pass
 
 
 def _now() -> str:
@@ -48,17 +41,16 @@ class MemoryStore:
     async def close(self) -> None:
         pass
 
-    # sessions ------------------------------------------------------------
     async def load_session(self, user_id: int) -> dict[str, Any] | None:
-        return self.sessions.get(user_id)
+        data = self.sessions.get(user_id)
+        return deepcopy(data) if data is not None else None
 
     async def save_session(self, user_id: int, data: dict[str, Any]) -> None:
-        self.sessions[user_id] = data
+        self.sessions[user_id] = deepcopy(data)
 
     async def delete_session(self, user_id: int) -> None:
         self.sessions.pop(user_id, None)
 
-    # users ---------------------------------------------------------------
     async def touch_user(self, user_id: int, info: dict[str, Any]) -> None:
         row = self.users.setdefault(
             user_id,
@@ -67,27 +59,40 @@ class MemoryStore:
         row.update(info, last_seen=_now())
 
     async def get_profile(self, user_id: int) -> dict[str, Any]:
-        return dict(self.users.get(user_id) or {"user_id": user_id, "posts_created": 0})
-
-    async def update_profile(self, user_id: int, **fields: Any) -> None:
-        self.users.setdefault(user_id, {"user_id": user_id, "posts_created": 0}).update(
-            fields
+        return deepcopy(
+            self.users.get(user_id) or {"user_id": user_id, "posts_created": 0}
         )
 
+    async def update_profile(self, user_id: int, **fields: Any) -> None:
+        row = self.users.setdefault(
+            user_id,
+            {"user_id": user_id, "posts_created": 0, "created_at": _now()},
+        )
+        row.update(fields, last_seen=_now())
+
     async def increment_posts(self, user_id: int) -> int:
-        row = self.users.setdefault(user_id, {"user_id": user_id, "posts_created": 0})
+        row = self.users.setdefault(
+            user_id,
+            {"user_id": user_id, "posts_created": 0, "created_at": _now()},
+        )
         row["posts_created"] = int(row.get("posts_created") or 0) + 1
+        row["last_seen"] = _now()
         return row["posts_created"]
 
-    # saved posts ---------------------------------------------------------
     async def list_posts(self, user_id: int) -> list[dict[str, Any]]:
-        rows = [dict(r) for r in self.posts.values() if r["user_id"] == user_id]
+        rows = [deepcopy(r) for r in self.posts.values() if r["user_id"] == user_id]
         return sorted(rows, key=lambda r: (r["updated_at"], r["id"]), reverse=True)
 
-    async def save_post(self, user_id: int, name: str, post: dict[str, Any]) -> tuple[int, bool]:
+    async def save_post(
+        self, user_id: int, name: str, post: dict[str, Any]
+    ) -> tuple[int, bool]:
         for row in self.posts.values():
             if row["user_id"] == user_id and row["name"].lower() == name.lower():
-                row.update(post=post, name=name, updated_at=_now() + f"#{time.monotonic_ns()}")
+                row.update(
+                    post=deepcopy(post),
+                    name=name,
+                    updated_at=_now() + f"#{time.monotonic_ns()}",
+                )
                 return row["id"], True
         if len(await self.list_posts(user_id)) >= MAX_SAVED_POSTS:
             raise StoreError("limit")
@@ -97,7 +102,7 @@ class MemoryStore:
             "id": post_id,
             "user_id": user_id,
             "name": name,
-            "post": post,
+            "post": deepcopy(post),
             "created_at": stamp,
             "updated_at": stamp,
         }
@@ -105,7 +110,7 @@ class MemoryStore:
 
     async def get_post(self, user_id: int, post_id: int) -> dict[str, Any] | None:
         row = self.posts.get(post_id)
-        return dict(row) if row and row["user_id"] == user_id else None
+        return deepcopy(row) if row and row["user_id"] == user_id else None
 
     async def delete_post(self, user_id: int, post_id: int) -> bool:
         if await self.get_post(user_id, post_id):
@@ -119,8 +124,6 @@ class SupabaseStore:
 
     def __init__(self, url: str, key: str, timeout: float = 8.0) -> None:
         headers = {"apikey": key, "Content-Type": "application/json"}
-        # Legacy anon/service_role keys are JWTs and must also be sent as a
-        # bearer token; new sb_publishable_/sb_secret_ keys only need apikey.
         if key.startswith("eyJ"):
             headers["Authorization"] = f"Bearer {key}"
         self._client = httpx.AsyncClient(
@@ -147,7 +150,8 @@ class SupabaseStore:
             raise StoreError(f"network: {type(error).__name__}") from None
         if response.status_code >= 400:
             try:
-                detail = response.json().get("message", "")
+                body = response.json()
+                detail = body.get("message", "") if isinstance(body, dict) else ""
             except ValueError:
                 detail = ""
             raise StoreError(f"HTTP {response.status_code} {detail}".strip())
@@ -161,7 +165,9 @@ class SupabaseStore:
     async def setup(self) -> bool:
         try:
             for table in ("bot_users", "bot_sessions", "saved_posts"):
-                await self._request("GET", f"/{table}", params={"select": "*", "limit": "1"})
+                await self._request(
+                    "GET", f"/{table}", params={"select": "*", "limit": "1"}
+                )
         except StoreError as error:
             logger.warning(
                 "Supabase unavailable (%s). Run supabase/migrations/*.sql in the "
@@ -174,7 +180,6 @@ class SupabaseStore:
     async def close(self) -> None:
         await self._client.aclose()
 
-    # sessions ------------------------------------------------------------
     async def load_session(self, user_id: int) -> dict[str, Any] | None:
         rows = await self._request(
             "GET",
@@ -197,7 +202,6 @@ class SupabaseStore:
             "DELETE", "/bot_sessions", params={"user_id": f"eq.{user_id}"}
         )
 
-    # users ---------------------------------------------------------------
     async def touch_user(self, user_id: int, info: dict[str, Any]) -> None:
         await self._request(
             "POST",
@@ -217,20 +221,18 @@ class SupabaseStore:
 
     async def update_profile(self, user_id: int, **fields: Any) -> None:
         await self._request(
-            "PATCH",
+            "POST",
             "/bot_users",
-            params={"user_id": f"eq.{user_id}"},
-            json=fields,
-            prefer="return=minimal",
+            params={"on_conflict": "user_id"},
+            json={"user_id": user_id, **fields, "last_seen": _now()},
+            prefer="resolution=merge-duplicates,return=minimal",
         )
 
     async def increment_posts(self, user_id: int) -> int:
-        # Updates are processed sequentially, so read-modify-write is safe.
         count = int((await self.get_profile(user_id)).get("posts_created") or 0) + 1
         await self.update_profile(user_id, posts_created=count)
         return count
 
-    # saved posts ---------------------------------------------------------
     async def list_posts(self, user_id: int) -> list[dict[str, Any]]:
         return (
             await self._request(
@@ -246,7 +248,9 @@ class SupabaseStore:
             or []
         )
 
-    async def save_post(self, user_id: int, name: str, post: dict[str, Any]) -> tuple[int, bool]:
+    async def save_post(
+        self, user_id: int, name: str, post: dict[str, Any]
+    ) -> tuple[int, bool]:
         rows = await self.list_posts(user_id)
         existing = [r for r in rows if r["name"].lower() == name.lower()]
         if existing:
@@ -292,7 +296,9 @@ class SupabaseStore:
         return bool(rows)
 
 
-async def create_store(url: str, key: str, enabled: bool = True) -> MemoryStore | SupabaseStore:
+async def create_store(
+    url: str, key: str, enabled: bool = True
+) -> MemoryStore | SupabaseStore:
     if enabled and url and key:
         store = SupabaseStore(url, key)
         if await store.setup():

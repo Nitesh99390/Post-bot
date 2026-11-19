@@ -1,5 +1,3 @@
-"""Telegram bot with a health endpoint and optional authenticated webhook."""
-
 import asyncio
 import hmac
 import logging
@@ -37,7 +35,8 @@ def build_web_app(application: Application) -> web.Application:
 
     async def webhook(request: web.Request) -> web.Response:
         secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(secret.encode(), config.WEBHOOK_SECRET.encode()):
+        expected = config.webhook_secret()
+        if not hmac.compare_digest(secret.encode(), expected.encode()):
             return web.Response(status=403)
         if not application.running:
             return web.Response(status=503, headers={"Retry-After": "5"})
@@ -58,9 +57,13 @@ def build_web_app(application: Application) -> web.Application:
                 or type(message.get("date")) is not int
                 or not isinstance(chat, dict)
                 or type(chat.get("id")) is not int
-                or not isinstance(sender, dict)
-                or type(sender.get("id")) is not int
             ):
+                return web.Response(status=400)
+            if sender is None:
+                if chat.get("type") != "channel":
+                    return web.Response(status=400)
+                return web.Response(text="ok")
+            if not isinstance(sender, dict) or type(sender.get("id")) is not int:
                 return web.Response(status=400)
             update = Update.de_json(data, application.bot)
         except (
@@ -130,7 +133,7 @@ async def run() -> None:
                 if config.BASE_URL:
                     await application.bot.set_webhook(
                         url=config.BASE_URL + config.WEBHOOK_PATH,
-                        secret_token=config.WEBHOOK_SECRET,
+                        secret_token=config.webhook_secret(),
                         allowed_updates=["message"],
                         max_connections=10,
                         drop_pending_updates=False,
@@ -145,7 +148,6 @@ async def run() -> None:
                 logger.info("Bot ready")
                 await stop.wait()
             finally:
-                await runner.cleanup()
                 if application.updater and application.updater.running:
                     await application.updater.stop()
                 if application.running:

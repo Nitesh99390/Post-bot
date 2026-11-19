@@ -1,5 +1,3 @@
-"""Post model, validation, serialisation and Telegram delivery."""
-
 from __future__ import annotations
 
 import html
@@ -25,6 +23,7 @@ COLORS = {
 STYLE_TO_COLOR = {style: key for key, (_, style) in COLORS.items()}
 MAX_BUTTONS = 10
 MAX_BUTTON_TEXT = 64
+MAX_COLUMNS = 3
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4000
 MEDIA_NAMES = {
@@ -47,9 +46,8 @@ MEDIA_ICONS = {
     "audio": "🎵",
     "document": "📄",
 }
-# Media that cannot carry a caption: text is delivered as a second message.
 NO_CAPTION = {"sticker", "video_note"}
-# Checked in this order; GIF messages also carry a document, so it goes first.
+SPOILER_MEDIA = {"photo", "video", "animation"}
 MEDIA_ORDER = (
     "animation",
     "sticker",
@@ -60,6 +58,9 @@ MEDIA_ORDER = (
     "audio",
     "document",
 )
+
+_MENTION_RE = re.compile(r"^@[A-Za-z][A-Za-z0-9_]{3,31}$")
+_TME_INVITE_RE = re.compile(r"^(?:https?://)?t\.me/\+[A-Za-z0-9_-]{4,64}$", re.IGNORECASE)
 
 
 def plain_len(html_text: str) -> int:
@@ -79,8 +80,11 @@ def normalize_url(raw: str) -> str | None:
         or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
     ):
         return None
-    if re.fullmatch(r"@[A-Za-z0-9_]{4,32}", value):
+    if _MENTION_RE.fullmatch(value):
         return "https://t.me/" + value[1:]
+    if _TME_INVITE_RE.fullmatch(value):
+        suffix = value.split("t.me/", 1)[1]
+        return "https://t.me/" + suffix
     if "\\" in value:
         return None
     if "://" not in value:
@@ -96,10 +100,13 @@ def normalize_url(raw: str) -> str | None:
         host = (parts.hostname or "").encode("idna").decode("ascii")
         if len(host) > 253 or "." not in host:
             return None
+        labels = host.split(".")
         if any(
             not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", part)
-            for part in host.split(".")
+            for part in labels
         ):
+            return None
+        if labels[-1].isdigit():
             return None
         port = parts.port
         if port is not None and not 1 <= port <= 65535:
@@ -116,24 +123,39 @@ _QUICK_PIPE = re.compile(r"^(.*?\S)\s*\|\s*(\S+)$")
 _QUICK_DASH = re.compile(r"^(.*\S)\s+[-–—]\s+(\S+)$")
 
 
-def parse_quick_buttons(raw: str) -> list[dict[str, str]] | None:
-    """Parse ``Label - link`` / ``Label | link`` lines.
+def _parse_single_pair(segment: str) -> dict[str, str] | None:
+    match = _QUICK_PIPE.match(segment) or _QUICK_DASH.match(segment)
+    if not match:
+        return None
+    label, url = match.group(1).strip(), normalize_url(match.group(2))
+    if not url or not label or utf16_len(label) > MAX_BUTTON_TEXT:
+        return None
+    return {"text": label, "url": url}
 
-    Returns the parsed buttons only when every non-empty line is valid, so
-    ordinary text is never mistaken for buttons.
-    """
+
+def parse_quick_buttons(raw: str) -> list[dict[str, Any]] | None:
     lines = [line.strip() for line in raw.splitlines() if line.strip()]
     if not lines:
         return None
-    items = []
+    items: list[dict[str, Any]] = []
     for line in lines:
-        match = _QUICK_PIPE.match(line) or _QUICK_DASH.match(line)
-        if not match:
-            return None
-        label, url = match.group(1).strip(), normalize_url(match.group(2))
-        if not url or not label or utf16_len(label) > MAX_BUTTON_TEXT:
-            return None
-        items.append({"text": label, "url": url})
+        if "&&" in line:
+            parts = [part.strip() for part in line.split("&&")]
+            if not all(parts) or len(parts) > MAX_COLUMNS:
+                return None
+            row_items = [_parse_single_pair(part) for part in parts]
+            if any(item is None for item in row_items):
+                return None
+            for idx, item in enumerate(row_items):
+                assert item is not None
+                if idx > 0:
+                    item["same_row"] = True
+                items.append(item)
+        else:
+            parsed = _parse_single_pair(line)
+            if parsed is None:
+                return None
+            items.append(parsed)
     return items
 
 
@@ -142,11 +164,16 @@ class Post:
     media_type: str | None = None
     file_id: str | None = None
     text: str = ""
-    buttons: list[dict[str, str]] = field(default_factory=list)
+    buttons: list[dict[str, Any]] = field(default_factory=list)
     link_preview: bool = True
+    columns: int = 1
+    spoiler: bool = False
+    caption_above: bool = False
+    protect: bool = False
+    silent: bool = False
 
     def is_empty(self) -> bool:
-        return not self.file_id and not self.text.strip() and not self.buttons
+        return not self.file_id and not self.plain_text() and not self.buttons
 
     def validate(self) -> None:
         if self.media_type not in (None, *MEDIA_NAMES) or bool(self.media_type) != bool(
@@ -157,6 +184,8 @@ class Post:
             raise ValueError(
                 f"Text is too long. Use up to {TEXT_LIMIT} units; some symbols count as two."
             )
+        if type(self.columns) is not int or not 1 <= self.columns <= MAX_COLUMNS:
+            raise ValueError(f"Button columns must be between 1 and {MAX_COLUMNS}.")
         if len(self.buttons) > MAX_BUTTONS:
             raise ValueError(f"Use up to {MAX_BUTTONS} buttons per post.")
         for button in self.buttons:
@@ -173,51 +202,64 @@ class Post:
                     "Use a valid HTTP or HTTPS button link and choose a colour."
                 )
 
-    # ----- serialisation -------------------------------------------------
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Any) -> Post | None:
-        """Rebuild a post from stored JSON; returns None for invalid data."""
         if not isinstance(data, dict):
             return None
         try:
+            cols = data.get("columns", 1)
+            columns = int(cols) if type(cols) is int or (isinstance(cols, str) and cols.isdigit()) else 1
+            buttons: list[dict[str, Any]] = []
+            for b in data.get("buttons") or []:
+                entry: dict[str, Any] = {
+                    "text": str(b["text"]),
+                    "url": str(b["url"]),
+                    "color": str(b.get("color", "blue")),
+                }
+                if b.get("same_row"):
+                    entry["same_row"] = True
+                buttons.append(entry)
             post = cls(
                 media_type=data.get("media_type") or None,
                 file_id=data.get("file_id") or None,
                 text=str(data.get("text") or ""),
-                buttons=[
-                    {
-                        "text": str(b["text"]),
-                        "url": str(b["url"]),
-                        "color": str(b.get("color", "blue")),
-                    }
-                    for b in (data.get("buttons") or [])
-                ],
+                buttons=buttons,
                 link_preview=bool(data.get("link_preview", True)),
+                columns=columns,
+                spoiler=bool(data.get("spoiler", False)),
+                caption_above=bool(data.get("caption_above", False)),
+                protect=bool(data.get("protect", False)),
+                silent=bool(data.get("silent", False)),
             )
             post.validate()
         except (TypeError, KeyError, ValueError, AttributeError):
             return None
         return post
 
-    # ----- presentation --------------------------------------------------
     def plain_text(self) -> str:
         return html.unescape(re.sub(r"<[^>]+>", "", self.text)).strip()
+
+    def supports_spoiler(self) -> bool:
+        return self.media_type in SPOILER_MEDIA
+
+    def supports_caption_above(self) -> bool:
+        return self.media_type in SPOILER_MEDIA
 
     def default_name(self) -> str:
         for line in self.plain_text().splitlines():
             line = line.strip()
             if line:
-                return line[:40] + ("…" if len(line) > 40 else "")
+                return line[:39] + "…" if len(line) > 40 else line
         if self.media_type:
             return f"{MEDIA_NAMES[self.media_type]} post"
         return "Untitled post"
 
     def splits_text(self) -> bool:
         body = self.text.strip()
-        if not self.media_type or not body:
+        if not self.media_type or not self.plain_text():
             return False
         return self.media_type in NO_CAPTION or plain_len(body) > CAPTION_LIMIT
 
@@ -230,35 +272,72 @@ class Post:
         length = plain_len(self.text.strip())
         if length:
             parts.append(f"📝 {length} chars")
-        parts.append(f"🔗 {len(self.buttons)}/{MAX_BUTTONS}")
+        btn_info = f"🔗 {len(self.buttons)}/{MAX_BUTTONS}"
+        if self.columns > 1 and len(self.buttons) > 1:
+            btn_info += f" ({self.columns} col)"
+        parts.append(btn_info)
+        flags = []
         if not self.link_preview:
-            parts.append("🚫 preview off")
+            flags.append("🚫 preview off")
+        if self.spoiler and self.supports_spoiler():
+            flags.append("🫣 spoiler")
+        if self.caption_above and self.supports_caption_above():
+            flags.append("⬆️ top caption")
+        if self.protect:
+            flags.append("🛡 protected")
+        if self.silent:
+            flags.append("🔕 silent")
+        parts.extend(flags)
         return "  ·  ".join(parts)
 
     def keyboard(self) -> InlineKeyboardMarkup | None:
         if not self.buttons:
             return None
-        return InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        b["text"], url=b["url"], style=COLORS[b["color"]][1]
-                    )
-                ]
-                for b in self.buttons
-            ]
-        )
+        rows: list[list[InlineKeyboardButton]] = []
+        has_explicit_rows = any(b.get("same_row") for b in self.buttons)
+        if has_explicit_rows and self.columns == 1:
+            for b in self.buttons:
+                btn = InlineKeyboardButton(
+                    b["text"], url=b["url"], style=COLORS[b["color"]][1]
+                )
+                if b.get("same_row") and rows and len(rows[-1]) < MAX_COLUMNS:
+                    rows[-1].append(btn)
+                else:
+                    rows.append([btn])
+        else:
+            step = max(1, min(self.columns, MAX_COLUMNS))
+            for i in range(0, len(self.buttons), step):
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            b["text"], url=b["url"], style=COLORS[b["color"]][1]
+                        )
+                        for b in self.buttons[i : i + step]
+                    ]
+                )
+        return InlineKeyboardMarkup(rows)
 
-    # ----- delivery ------------------------------------------------------
     async def send(
         self, bot: Bot, chat_id: int | str, *, silent: bool | None = None
     ) -> Message | None:
         self.validate()
         if self.is_empty():
             return None
-        body, keyboard = self.text.strip(), self.keyboard()
+        body = self.text.strip() if self.plain_text() else ""
+        keyboard = self.keyboard()
         preview = None if self.link_preview else LinkPreviewOptions(is_disabled=True)
-        extra = {"disable_notification": True} if silent else {}
+        use_silent = self.silent if silent is None else silent
+        extra: dict[str, Any] = {}
+        if use_silent:
+            extra["disable_notification"] = True
+        if self.protect:
+            extra["protect_content"] = True
+
+        media_extra = dict(extra)
+        if self.spoiler and self.supports_spoiler():
+            media_extra["has_spoiler"] = True
+        if self.caption_above and self.supports_caption_above() and body:
+            media_extra["show_caption_above_media"] = True
 
         async def send_text(text: str) -> Message:
             return await bot.send_message(
@@ -296,9 +375,12 @@ class Post:
                 caption=body or None,
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML,
-                **extra,
+                **media_extra,
             )
-        await sender(chat_id, self.file_id, **extra)
+        split_extra = dict(extra)
+        if self.spoiler and self.supports_spoiler():
+            split_extra["has_spoiler"] = True
+        await sender(chat_id, self.file_id, **split_extra)
         return await send_text(body)
 
 
@@ -310,18 +392,22 @@ def extract_media(message: Message) -> tuple[str | None, str | None]:
     return None, None
 
 
-def extract_buttons(message: Message) -> list[dict[str, str]]:
-    """Import valid URL buttons from a forwarded message, keeping their colour."""
+def extract_buttons(message: Message) -> list[dict[str, Any]]:
     markup = getattr(message, "reply_markup", None)
-    buttons: list[dict[str, str]] = []
+    buttons: list[dict[str, Any]] = []
     for row in getattr(markup, "inline_keyboard", None) or ():
+        row_added = 0
         for button in row:
             url = normalize_url(button.url or "") if button.url else None
             label = (button.text or "").strip()
             if not url or not label or utf16_len(label) > MAX_BUTTON_TEXT:
                 continue
             color = STYLE_TO_COLOR.get(getattr(button, "style", None) or "", "blue")
-            buttons.append({"text": label, "url": url, "color": color})
+            entry: dict[str, Any] = {"text": label, "url": url, "color": color}
+            if row_added > 0 and row_added < MAX_COLUMNS:
+                entry["same_row"] = True
+            buttons.append(entry)
+            row_added += 1
             if len(buttons) == MAX_BUTTONS:
                 return buttons
     return buttons

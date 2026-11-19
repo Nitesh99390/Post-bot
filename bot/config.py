@@ -1,5 +1,3 @@
-"""Environment configuration for polling and webhook deployments."""
-
 import hashlib
 import os
 from urllib.parse import urlsplit
@@ -11,13 +9,8 @@ BASE_URL = (
     .strip()
     .rstrip("/")
 )
-WEBHOOK_SECRET = hashlib.sha256(("wh:" + BOT_TOKEN).encode()).hexdigest()
 WEBHOOK_PATH = "/webhook"
 
-# Supabase (cloud storage for drafts, saved posts and stats).
-# Defaults point at the project linked to this private repository. Override
-# with environment variables; SUPABASE_KEY may be a sb_secret_ / service_role
-# key on the server for tighter security. Set STORAGE=memory to disable.
 SUPABASE_URL = (
     os.environ.get("SUPABASE_URL") or "https://tmziuejwimwzyowkvhak.supabase.co"
 ).strip().rstrip("/")
@@ -25,6 +18,13 @@ SUPABASE_KEY = (
     os.environ.get("SUPABASE_KEY") or "sb_publishable_yrb-RaDOBsI_cEpZPkPEeg_PmY5ea_y"
 ).strip()
 STORAGE_ENABLED = os.environ.get("STORAGE", "supabase").strip().lower() != "memory"
+
+
+def webhook_secret() -> str:
+    return hashlib.sha256(("wh:" + BOT_TOKEN).encode()).hexdigest()
+
+
+WEBHOOK_SECRET = webhook_secret()
 
 
 def validate() -> None:

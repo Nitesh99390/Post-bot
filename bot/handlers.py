@@ -1,10 +1,3 @@
-"""Private-chat post editor.
-
-The on-screen keyboards stay deliberately small (Create Post, then Edit Text /
-Add Button / Preview / Finish / Remove Last Button). Extra features are
-reached through commands and smart input detection instead of extra buttons.
-"""
-
 from __future__ import annotations
 
 import hashlib
@@ -42,6 +35,7 @@ from .post import (
     COLORS,
     MAX_BUTTON_TEXT,
     MAX_BUTTONS,
+    MAX_COLUMNS,
     Post,
     extract_buttons,
     extract_media,
@@ -57,17 +51,17 @@ BTN_CREATE = "✨ Create Post"
 BTN_TEXT, BTN_BUTTON = "✏️ Edit Text", "🔗 Add Button"
 BTN_PREVIEW, BTN_DONE = "👁 Preview", "✅ Finish"
 BTN_REMOVE = "↩️ Remove Last Button"
-K_POST, K_STATE, K_DRAFT = "post", "state", "draft_button"
+K_POST, K_STATE, K_DRAFT, K_HISTORY = "post", "state", "draft_button", "history"
 S_MEDIA, S_MENU, S_TEXT = "media", "menu", "text"
 S_BTN_NAME, S_BTN_LINK, S_BTN_COLOR = "btn_name", "btn_link", "btn_color"
+MAX_HISTORY = 10
 NO_KEYBOARD = ReplyKeyboardRemove()
 LINE = "━━━━━━━━━━━━━━"
-CHANNEL_RE = re.compile(r"^(@[A-Za-z0-9_]{4,32}|-100\d{5,})$")
+CHANNEL_RE = re.compile(r"^(@[A-Za-z][A-Za-z0-9_]{3,31}|-100\d{5,})$")
 OPEN_DEL_RE = re.compile(r"^/(open|del)_(\d{1,12})(?:@\w+)?$")
 
 
 def norm(text: str) -> str:
-    """Compare labels without emoji, so old and new keyboards both work."""
     return " ".join(re.sub(r"[^a-z0-9 ]+", " ", text.lower()).split())
 
 
@@ -82,7 +76,6 @@ MENU_ACTIONS = {
 COLOR_BY_LABEL = {norm(label): key for key, (label, _) in COLORS.items()}
 
 
-# ----- keyboards ----------------------------------------------------------
 def main_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [[KeyboardButton(BTN_CREATE, style="primary")]],
@@ -115,13 +108,24 @@ def color_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-# ----- state helpers -------------------------------------------------------
 def get_post(context: ContextTypes.DEFAULT_TYPE) -> Post:
     return context.user_data.setdefault(K_POST, Post())
 
 
 def reset(context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.clear()
+
+
+def push_history(context: ContextTypes.DEFAULT_TYPE, previous: Post) -> None:
+    if previous.is_empty():
+        return
+    stack: list[dict[str, Any]] = context.user_data.setdefault(K_HISTORY, [])
+    snap = previous.to_dict()
+    if stack and stack[-1] == snap:
+        return
+    stack.append(snap)
+    if len(stack) > MAX_HISTORY:
+        del stack[:-MAX_HISTORY]
 
 
 def get_store(context: ContextTypes.DEFAULT_TYPE):
@@ -132,7 +136,6 @@ def get_store(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def safe_store(context, method: str, *args, default=None, **kwargs):
-    """Call the store without letting storage problems break the chat."""
     try:
         return await getattr(get_store(context), method)(*args, **kwargs)
     except StoreError as error:
@@ -172,7 +175,6 @@ def delivery_error(error: TelegramError) -> str:
     return "⚠️ Telegram could not send this post. Your draft is saved. Edit the content or remove the last button and try again."
 
 
-# ----- session persistence (Supabase) -------------------------------------
 def serialize(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:
     data: dict[str, Any] = {}
     post = context.user_data.get(K_POST)
@@ -181,6 +183,9 @@ def serialize(context: ContextTypes.DEFAULT_TYPE) -> dict[str, Any]:
     for key in (K_STATE, K_DRAFT):
         if context.user_data.get(key) is not None:
             data[key] = context.user_data[key]
+    history = context.user_data.get(K_HISTORY)
+    if isinstance(history, list) and history and "post" in data:
+        data[K_HISTORY] = history[-MAX_HISTORY:]
     return data
 
 
@@ -195,10 +200,18 @@ def restore(context: ContextTypes.DEFAULT_TYPE, data: Any) -> None:
         context.user_data[K_STATE] = state
     if isinstance(data.get(K_DRAFT), dict):
         context.user_data[K_DRAFT] = data[K_DRAFT]
+    raw_history = data.get(K_HISTORY)
+    if isinstance(raw_history, list) and post:
+        valid = [
+            item
+            for item in raw_history[-MAX_HISTORY:]
+            if Post.from_dict(item) is not None
+        ]
+        if valid:
+            context.user_data[K_HISTORY] = valid
 
 
 async def before_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """First message from a user in this process: restore + housekeeping."""
     user, chat = update.effective_user, update.effective_chat
     if not user or not chat:
         return
@@ -219,8 +232,6 @@ async def before_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "language_code": user.language_code,
         },
     )
-    # Older versions set a per-chat "My profile" Mini App menu button. It
-    # overrides the bot-wide default, so reset it to the native command menu.
     try:
         await context.bot.set_chat_menu_button(
             chat_id=chat.id, menu_button=MenuButtonCommands()
@@ -243,13 +254,16 @@ async def after_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if hashes.get(user.id) == digest:
         return
     if data:
-        await safe_store(context, "save_session", user.id, data)
+        res = await safe_store(context, "save_session", user.id, data, default=False)
+        if res is False:
+            return
     else:
-        await safe_store(context, "delete_session", user.id)
+        res = await safe_store(context, "delete_session", user.id, default=False)
+        if res is False:
+            return
     hashes[user.id] = digest
 
 
-# ----- core flow -----------------------------------------------------------
 def draft_header(post: Post, title: str) -> str:
     return f"<b>{title}</b>\n<code>{esc(post.summary())}</code>\n{LINE}\n"
 
@@ -287,6 +301,9 @@ async def save_candidate(
     except ValueError as error:
         await update.effective_message.reply_text(f"⚠️ {error}")
         return
+    current = get_post(context)
+    if candidate != current:
+        push_history(context, current)
     context.user_data[K_POST] = candidate
     context.user_data.pop(K_DRAFT, None)
     await show_preview(update, context)
@@ -295,10 +312,13 @@ async def save_candidate(
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     post = context.user_data.get(K_POST)
+    history = context.user_data.get(K_HISTORY)
     has_draft = isinstance(post, Post) and not post.is_empty()
     reset(context)
     if has_draft:
         context.user_data[K_POST] = post
+        if history:
+            context.user_data[K_HISTORY] = history
     profile = await safe_store(context, "get_profile", user.id, default={}) or {}
     saved = await safe_store(context, "list_posts", user.id, default=[]) or []
     created = int(profile.get("posts_created") or 0)
@@ -346,7 +366,23 @@ async def cmd_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if post.is_empty():
         return await start_create(update, context)
     context.user_data[K_STATE] = S_MENU
-    await panel(update, context, draft_header(post, "📂 Your draft") + "Choose what to refine next.")
+    await panel(
+        update,
+        context,
+        draft_header(post, "📂 Your draft") + "Choose what to refine next.",
+    )
+
+
+async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    stack: list[dict[str, Any]] = context.user_data.get(K_HISTORY) or []
+    while stack:
+        restored = Post.from_dict(stack.pop())
+        if restored and not restored.is_empty():
+            context.user_data[K_POST] = restored
+            context.user_data.pop(K_DRAFT, None)
+            await reply(update, "↩️ Reverted last change.")
+            return await show_preview(update, context)
+    await reply(update, "📭 Nothing to undo right now.")
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -354,25 +390,31 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         update,
         "<b>📖 Quick guide</b>\n"
         f"{LINE}\n"
-        "<b>Create</b>\n"
+        "<b>Create &amp; Refine</b>\n"
         "/new — Start a new post\n"
         "/preview — View the current draft\n"
+        "/undo — Undo your last change\n"
+        "/clear — Clear <code>text</code>, <code>media</code> or <code>buttons</code>\n"
         "/back — Leave the current step\n"
         "/cancel — Discard the draft\n\n"
-        "<b>Templates</b> ☁️\n"
-        "/save <i>name</i> — Save the draft\n"
-        "/posts — Your saved posts\n\n"
-        "<b>Publish</b>\n"
-        "/channel @name — Set your channel\n"
-        "/publish — Post straight to it\n"
+        "<b>Layout &amp; Options</b>\n"
+        "/layout <i>1|2|3</i> — Buttons per row\n"
         "/linkpreview — Toggle link previews\n"
+        "/spoiler — Blur photo, video or GIF\n"
+        "/caption — Place caption above or below media\n"
+        "/protect — Block forwarding &amp; saving\n"
+        "/silent — Deliver without notification sound\n\n"
+        "<b>Templates &amp; Channels</b> ☁️\n"
+        "/save <i>name</i> — Save the draft\n"
+        "/posts — Your saved posts\n"
+        "/channel <i>@name</i> — Set default channel\n"
+        "/publish <i>[pin]</i> — Publish to channel (add <code>pin</code> to pin it)\n"
         "/stats — Your numbers\n\n"
         "<b>Smart tricks</b>\n"
-        "• Forward any post to copy it with its buttons\n"
-        "• In Add Button, send several at once:\n"
-        "<code>Join Channel - @mychannel\nWebsite | example.com</code>\n"
-        "• Send new media from the editor to replace it\n"
-        "• Edit Text replaces the full text",
+        "• Forward any post to import its media, formatting &amp; buttons\n"
+        "• Add multiple buttons or side-by-side rows at once:\n"
+        "<code>Join - @mychannel &amp;&amp; Site | example.com</code>\n"
+        "• Send new media in the editor to swap it instantly",
     )
 
 
@@ -381,7 +423,7 @@ async def ask_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply(
         update,
         "<b>✏️ Edit text</b>\nSend the complete replacement text. Telegram formatting is preserved."
-        "\n\n<i>/back keeps the current text.</i>",
+        + tip("Use /clear text to remove text completely, or /back to keep it."),
         NO_KEYBOARD,
     )
 
@@ -399,7 +441,7 @@ async def ask_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         f"<b>🔗 Button {len(post.buttons) + 1}/{MAX_BUTTONS} — label</b>\n"
         "Choose a short name, such as <i>Join Channel</i>."
         + tip(
-            "Fast mode: send <code>Label - link</code>, one per line, to add several buttons at once."
+            "Fast mode: send <code>Label - link</code> per line, or join with <code>&amp;&amp;</code> for side-by-side buttons."
         )
         + "\n<i>/back to return.</i>",
         NO_KEYBOARD,
@@ -420,16 +462,23 @@ async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning("Final delivery failed (%s)", type(error).__name__)
         return await panel(update, context, delivery_error(error))
     split = post.splits_text()
+    protected = post.protect
     reset(context)
     count = await record_delivery(update, context)
     profile = await safe_store(
         context, "get_profile", update.effective_user.id, default={}
     ) or {}
     channel = profile.get("default_channel")
-    text = (
-        "<b>🎉 Ready to share</b>\nForward the post above to your channel or group."
-        + (" Forward both messages — the text was sent separately." if split else "")
-    )
+    if protected:
+        text = (
+            "<b>🎉 Post delivered</b>\n"
+            "Forwarding protection is active on this post — use /publish next time to send protected posts directly to a channel."
+        )
+    else:
+        text = (
+            "<b>🎉 Ready to share</b>\nForward the post above to your channel or group."
+            + (" Forward both messages — the text was sent separately." if split else "")
+        )
     if count:
         text += f"\n\n🏆 That's post <b>#{count}</b>!"
     if channel:
@@ -445,6 +494,12 @@ async def on_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     state = context.user_data.get(K_STATE)
     if media_type:
         candidate.media_type, candidate.file_id = media_type, file_id
+        if getattr(msg, "has_media_spoiler", False) and candidate.supports_spoiler():
+            candidate.spoiler = True
+        elif not candidate.supports_spoiler():
+            candidate.spoiler = False
+        if not candidate.supports_caption_above():
+            candidate.caption_above = False
         if msg.caption is not None:
             candidate.text = msg.caption_html
     elif msg.text and state in (S_MEDIA, S_TEXT):
@@ -468,7 +523,7 @@ async def on_button_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         free = MAX_BUTTONS - len(get_post(context).buttons)
         if len(quick) > free:
             await update.effective_message.reply_text(
-                f"⚠️ Only {free} more button(s) fit. Send fewer lines."
+                f"⚠️ Only {free} more button(s) fit. Send fewer buttons."
             )
             return
         context.user_data[K_DRAFT] = {"items": quick}
@@ -531,11 +586,16 @@ async def on_button_color(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message or not update.effective_user:
         return
-    text = (update.effective_message.text or "").strip()
+    msg = update.effective_message
+    text = (msg.text or "").strip()
     state = context.user_data.get(K_STATE)
     if state is None:
         if norm(text) == norm(BTN_CREATE):
             return await start_create(update, context)
+        if extract_media(msg)[0] or getattr(msg, "forward_origin", None) is not None:
+            reset(context)
+            context.user_data[K_STATE] = S_MEDIA
+            return await on_content(update, context)
         await reply(
             update,
             "Tap <b>✨ Create Post</b> to begin, or /help for every feature.",
@@ -555,8 +615,17 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             post = deepcopy(get_post(context))
             if post.buttons:
                 post.buttons.pop()
+            if post.is_empty():
+                push_history(context, get_post(context))
+                context.user_data[K_POST] = Post()
+                context.user_data[K_STATE] = S_MEDIA
+                return await reply(
+                    update,
+                    "↩️ Removed the last button. Your draft is now empty — send text or media to continue.",
+                    NO_KEYBOARD,
+                )
             return await save_candidate(update, context, post)
-        if extract_media(update.effective_message)[0]:
+        if extract_media(msg)[0]:
             return await on_content(update, context)
         quick = parse_quick_buttons(text) if text else None
         if quick:
@@ -569,8 +638,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             + tip("Send <code>Label - link</code> here to add a button instantly."),
         )
     if state in (S_MEDIA, S_TEXT):
-        if state == S_TEXT and not update.effective_message.text:
-            await update.effective_message.reply_text(
+        if state == S_TEXT and not msg.text:
+            await msg.reply_text(
                 "Send text to replace the current text, or use /back."
             )
             return
@@ -585,7 +654,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await cmd_back(update, context)
 
 
-# ----- templates ----------------------------------------------------------
 async def cmd_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     post = get_post(context)
     if post.is_empty():
@@ -670,11 +738,11 @@ async def on_open_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await show_preview(update, context)
 
 
-# ----- publishing & settings ------------------------------------------------
 def parse_channel(raw: str) -> str | None:
     value = raw.strip()
-    if value.startswith("https://t.me/") or value.startswith("t.me/"):
-        value = "@" + value.rsplit("/", 1)[-1]
+    value = re.sub(r"^(?:https?://)?t\.me/", "@", value, flags=re.IGNORECASE)
+    if value.startswith("@"):
+        value = "@" + value[1:].split("/", 1)[0].split("?", 1)[0]
     return value if CHANNEL_RE.match(value) else None
 
 
@@ -708,6 +776,19 @@ async def cmd_channel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         member = await context.bot.get_chat_member(chat.id, context.bot.id)
         if member.status not in ("administrator", "creator"):
             raise Forbidden("not admin")
+        if (
+            chat.type == ChatType.CHANNEL
+            and member.status == "administrator"
+            and getattr(member, "can_post_messages", True) is False
+        ):
+            raise Forbidden("cannot post")
+        user_member = await context.bot.get_chat_member(chat.id, user_id)
+        if user_member.status not in ("administrator", "creator"):
+            await reply(
+                update,
+                f"⚠️ Only admins of {esc(channel)} can link or publish to it.",
+            )
+            return
     except TelegramError:
         await reply(
             update,
@@ -728,16 +809,42 @@ async def cmd_publish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if post.is_empty():
         await reply(update, "📭 Nothing to publish yet. Create a post first with /new.")
         return
-    arg = " ".join(context.args or []).strip()
+    tokens = [t for t in (context.args or []) if t.strip()]
+    pin = False
+    remaining: list[str] = []
+    for tok in tokens:
+        if tok.lower() in ("pin", "--pin", "-p"):
+            pin = True
+        else:
+            remaining.append(tok)
+    arg = " ".join(remaining).strip()
+    user_id = update.effective_user.id
     if arg:
         target = parse_channel(arg)
         if not target:
             await reply(update, "Use a channel like <code>@mychannel</code>.")
             return
+        try:
+            user_member = await context.bot.get_chat_member(target, user_id)
+        except (BadRequest, Forbidden) as error:
+            logger.warning("Publish check failed (%s)", type(error).__name__)
+            await panel(
+                update,
+                context,
+                f"⚠️ I couldn't post to {esc(target)}. Make sure I'm an admin with "
+                "‘Post messages’ permission. Your draft is saved.",
+            )
+            return
+        except TelegramError as error:
+            return await panel(update, context, delivery_error(error))
+        if user_member.status not in ("administrator", "creator"):
+            await reply(
+                update,
+                f"⚠️ Only admins of {esc(target)} can publish to it.",
+            )
+            return
     else:
-        profile = await safe_store(
-            context, "get_profile", update.effective_user.id, default={}
-        ) or {}
+        profile = await safe_store(context, "get_profile", user_id, default={}) or {}
         target = profile.get("default_channel")
         if not target:
             await reply(
@@ -759,6 +866,15 @@ async def cmd_publish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     except TelegramError as error:
         return await panel(update, context, delivery_error(error))
+    pinned_note = ""
+    if pin and message:
+        try:
+            await context.bot.pin_chat_message(
+                target, message.message_id, disable_notification=post.silent
+            )
+            pinned_note = "\n📌 Pinned in channel."
+        except TelegramError:
+            pinned_note = "\n<i>⚠️ Published, but missing permission to pin.</i>"
     reset(context)
     count = await record_delivery(update, context)
     link = ""
@@ -766,7 +882,7 @@ async def cmd_publish(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         link = f"\n🔗 https://t.me/{target[1:]}/{message.message_id}"
     await reply(
         update,
-        f"<b>🚀 Published to {esc(target)}</b>{link}"
+        f"<b>🚀 Published to {esc(target)}</b>{link}{pinned_note}"
         + (f"\n\n🏆 That's post <b>#{count}</b>!" if count else ""),
         main_keyboard(),
     )
@@ -783,6 +899,151 @@ async def cmd_linkpreview(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         update,
         "🔗 Link preview " + ("<b>on</b>." if candidate.link_preview else "<b>off</b>."),
     )
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_layout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Create a post first with /new, then set the button layout.")
+        return
+    arg = " ".join(context.args or []).strip().lower()
+    candidate = deepcopy(post)
+    if not arg:
+        candidate.columns = (candidate.columns % MAX_COLUMNS) + 1
+    elif arg in ("1", "2", "3"):
+        candidate.columns = int(arg)
+    elif arg in ("auto", "custom"):
+        candidate.columns = 1
+    else:
+        await reply(
+            update,
+            "Use <code>/layout 1</code>, <code>/layout 2</code> or <code>/layout 3</code> to set buttons per row.",
+        )
+        return
+    if arg in ("1", "2", "3") and int(arg) > 1:
+        for b in candidate.buttons:
+            b.pop("same_row", None)
+    await reply(
+        update,
+        f"📐 Button layout set to <b>{candidate.columns} per row</b>.",
+    )
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_spoiler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Create a post first with /new.")
+        return
+    if not post.supports_spoiler():
+        await reply(
+            update,
+            "🫣 Spoiler blur works on photos, videos and GIFs. Attach one first.",
+        )
+        return
+    candidate = deepcopy(post)
+    candidate.spoiler = not candidate.spoiler
+    await reply(
+        update,
+        "🫣 Media spoiler " + ("<b>on</b>." if candidate.spoiler else "<b>off</b>."),
+    )
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_caption(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Create a post first with /new.")
+        return
+    if not post.supports_caption_above():
+        await reply(
+            update,
+            "⬆️ Top captions are supported on photos, videos and GIFs.",
+        )
+        return
+    candidate = deepcopy(post)
+    candidate.caption_above = not candidate.caption_above
+    pos = "above media" if candidate.caption_above else "below media"
+    await reply(update, f"⬆️ Caption position: <b>{pos}</b>.")
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_protect(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Create a post first with /new.")
+        return
+    candidate = deepcopy(post)
+    candidate.protect = not candidate.protect
+    await reply(
+        update,
+        "🛡 Content protection " + ("<b>on</b> (forwarding &amp; saving blocked)." if candidate.protect else "<b>off</b>."),
+    )
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_silent(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Create a post first with /new.")
+        return
+    candidate = deepcopy(post)
+    candidate.silent = not candidate.silent
+    await reply(
+        update,
+        "🔕 Silent delivery " + ("<b>on</b>." if candidate.silent else "<b>off</b>."),
+    )
+    await save_candidate(update, context, candidate)
+
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    post = get_post(context)
+    if post.is_empty():
+        await reply(update, "📭 Your draft is already empty.")
+        return
+    part = " ".join(context.args or []).strip().lower()
+    if part not in ("text", "media", "buttons"):
+        await reply(
+            update,
+            "Specify what to clear:\n"
+            "• <code>/clear text</code> — Remove text/caption\n"
+            "• <code>/clear media</code> — Remove attached media\n"
+            "• <code>/clear buttons</code> — Remove all link buttons",
+        )
+        return
+    candidate = deepcopy(post)
+    if part == "text":
+        if not candidate.plain_text():
+            await reply(update, "ℹ️ This draft has no text to clear.")
+            return
+        candidate.text = ""
+        candidate.caption_above = False
+    elif part == "media":
+        if not candidate.media_type:
+            await reply(update, "ℹ️ This draft has no media to clear.")
+            return
+        candidate.media_type = None
+        candidate.file_id = None
+        candidate.spoiler = False
+        candidate.caption_above = False
+    else:
+        if not candidate.buttons:
+            await reply(update, "ℹ️ This draft has no buttons to clear.")
+            return
+        candidate.buttons = []
+        candidate.columns = 1
+    if candidate.is_empty():
+        push_history(context, post)
+        context.user_data[K_POST] = Post()
+        context.user_data[K_STATE] = S_MEDIA
+        await reply(
+            update,
+            f"🧹 Cleared {part}. Your draft is now empty — send new content or /undo.",
+            NO_KEYBOARD,
+        )
+        return
+    await reply(update, f"🧹 Cleared <b>{part}</b>.")
     await save_candidate(update, context, candidate)
 
 
@@ -831,11 +1092,18 @@ COMMANDS = (
     ("start", cmd_start, "Open Post Maker"),
     ("new", start_create, "Create a new post"),
     ("preview", show_preview, "Preview your draft"),
+    ("undo", cmd_undo, "Undo last draft change"),
+    ("clear", cmd_clear, "Clear text, media or buttons"),
+    ("layout", cmd_layout, "Set buttons per row (1-3)"),
+    ("spoiler", cmd_spoiler, "Toggle media spoiler blur"),
+    ("caption", cmd_caption, "Place caption above or below"),
+    ("protect", cmd_protect, "Block forwarding and saving"),
+    ("silent", cmd_silent, "Toggle silent notification"),
+    ("linkpreview", cmd_linkpreview, "Toggle link preview"),
     ("save", cmd_save, "Save draft as a template"),
     ("posts", cmd_posts, "Your saved posts"),
     ("publish", cmd_publish, "Post to your channel"),
     ("channel", cmd_channel, "Set your channel"),
-    ("linkpreview", cmd_linkpreview, "Toggle link preview"),
     ("stats", cmd_stats, "Your stats"),
     ("back", cmd_back, "Return to your draft"),
     ("cancel", cmd_cancel, "Discard your draft"),

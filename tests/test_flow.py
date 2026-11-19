@@ -86,6 +86,50 @@ class FakeRequest(BaseRequest):
                 "first_name": "Bot",
                 "username": "test_bot",
             }
+        elif name == "getChat":
+            self.calls.append((name, params))
+            if self.failure:
+                error, self.failure = self.failure, None
+                raise error
+            result = {
+                "id": -100123456,
+                "type": "channel",
+                "title": "My Channel",
+                "username": str(params.get("chat_id", "mychannel")).lstrip("@"),
+                "accent_color_id": 0,
+                "max_reaction_count": 11,
+            }
+        elif name == "getChatMember":
+            self.calls.append((name, params))
+            if self.failure:
+                error, self.failure = self.failure, None
+                raise error
+            uid = int(params.get("user_id", 42))
+            result = {
+                "status": "administrator",
+                "user": {"id": uid, "is_bot": uid == 1, "first_name": "Admin"},
+                "can_be_edited": False,
+                "is_anonymous": False,
+                "can_manage_chat": True,
+                "can_delete_messages": True,
+                "can_manage_video_chats": True,
+                "can_restrict_members": True,
+                "can_promote_members": False,
+                "can_change_info": True,
+                "can_invite_users": True,
+                "can_post_stories": True,
+                "can_edit_stories": True,
+                "can_delete_stories": True,
+                "can_post_messages": True,
+                "can_edit_messages": True,
+                "can_pin_messages": True,
+            }
+        elif name == "pinChatMessage":
+            self.calls.append((name, params))
+            if self.failure:
+                error, self.failure = self.failure, None
+                raise error
+            result = True
         else:
             self.calls.append((name, params))
             if self.failure:
@@ -535,8 +579,93 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
         self.transport.failure = BadRequest("chat not found")
         await self.send("/channel @missing_chan")
         self.assertIsNone((await self.store().get_profile(42)).get("default_channel"))
+        calls = await self.send("/channel https://t.me/mychannel/99")
+        self.assertIn("Channel set", calls[-1][1]["text"])
+        self.assertEqual(
+            (await self.store().get_profile(42)).get("default_channel"), "@mychannel"
+        )
         await self.send("/channel off")
         self.assertIsNone((await self.store().get_profile(42)).get("default_channel"))
+
+    async def test_layout_columns_and_side_by_side_buttons(self):
+        await self.draft(text="Grid post")
+        await self.send(
+            "Join - @mychannel && Website | example.com\nSupport - https://t.me/+AbCdEf1234"
+        )
+        await self.send("Blue")
+        calls = await self.send("/preview")
+        kb = calls[0][1]["reply_markup"]["inline_keyboard"]
+        self.assertEqual(len(kb), 2)
+        self.assertEqual([b["text"] for b in kb[0]], ["Join", "Website"])
+        self.assertEqual([b["text"] for b in kb[1]], ["Support"])
+        calls = await self.send("/layout 3")
+        kb = calls[1][1]["reply_markup"]["inline_keyboard"]
+        self.assertEqual(len(kb), 1)
+        self.assertEqual(len(kb[0]), 3)
+        calls = await self.send("/layout")
+        self.assertEqual(self.post().columns, 1)
+        self.assertEqual(keyboard(calls[-1]), [[h.BTN_TEXT, h.BTN_BUTTON], [h.BTN_PREVIEW, h.BTN_DONE], [h.BTN_REMOVE]])
+
+    async def test_spoiler_caption_protect_and_silent_options(self):
+        await self.draft(text="Text only")
+        calls = await self.send("/spoiler")
+        self.assertIn("photos, videos and GIFs", calls[-1][1]["text"])
+        await self.send(photo=PHOTO, caption="Secret drop")
+        await self.send("/spoiler")
+        await self.send("/caption")
+        await self.send("/protect")
+        calls = await self.send("/silent")
+        media_call = next(c for c in calls if c[0] == "sendPhoto")
+        self.assertTrue(media_call[1]["has_spoiler"])
+        self.assertTrue(media_call[1]["show_caption_above_media"])
+        self.assertTrue(media_call[1]["protect_content"])
+        self.assertTrue(media_call[1]["disable_notification"])
+        calls = await self.send(h.BTN_DONE)
+        self.assertIn("Forwarding protection", calls[-1][1]["text"])
+
+    async def test_undo_and_clear_parts(self):
+        await self.draft(photo=PHOTO, caption="Hello")
+        await self.add_button(name="Site", link="example.com", color="Green")
+        await self.send("/clear buttons")
+        self.assertEqual(self.post().buttons, [])
+        await self.send("/undo")
+        self.assertEqual(len(self.post().buttons), 1)
+        await self.send("/clear text")
+        self.assertEqual(self.post().text, "")
+        self.assertEqual(self.post().media_type, "photo")
+        await self.send("/clear media")
+        self.assertEqual(len(self.post().buttons), 1)
+        self.assertIsNone(self.post().media_type)
+        await self.send("/clear buttons")
+        self.assertTrue(self.post().is_empty())
+        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MEDIA)
+        await self.send("/undo")
+        self.assertEqual(len(self.post().buttons), 1)
+
+    async def test_publish_with_pin(self):
+        await self.draft(text="Announcement")
+        await self.store().update_profile(42, default_channel="@mychannel")
+        calls = await self.send("/publish pin")
+        methods = [c[0] for c in calls]
+        self.assertIn("sendMessage", methods)
+        self.assertIn("pinChatMessage", methods)
+        self.assertIn("Pinned", calls[-1][1]["text"])
+
+    async def test_instant_media_start_from_idle(self):
+        calls = await self.send(photo=PHOTO, caption="Instant draft")
+        self.assertIn("sendPhoto", [c[0] for c in calls])
+        self.assertEqual(self.post().text, "Instant draft")
+        self.assertEqual(self.app.user_data[42][h.K_STATE], h.S_MENU)
+
+    async def test_session_retry_after_transient_store_failure(self):
+        await self.send("/new")
+        orig_save = self.store().save_session
+        self.store().save_session = AsyncMock(side_effect=StoreError("transient"))
+        await self.send("Important draft")
+        self.assertNotIn("post", self.store().sessions.get(42, {}))
+        self.store().save_session = orig_save
+        await self.send("/preview")
+        self.assertEqual(self.store().sessions[42]["post"]["text"], "Important draft")
 
 
 class ValidationTests(unittest.TestCase):
@@ -544,6 +673,7 @@ class ValidationTests(unittest.TestCase):
         cases = {
             "example.com": "https://example.com",
             "@channelname": "https://t.me/channelname",
+            "t.me/+AbCdEf_1234": "https://t.me/+AbCdEf_1234",
             "HTTPS://EXAMPLE.COM/a?b=1#c": "https://example.com/a?b=1#c",
             "https://b\u00fccher.de": "https://xn--bcher-kva.de",
             "http://example.com:8080": "http://example.com:8080",
@@ -557,6 +687,10 @@ class ValidationTests(unittest.TestCase):
             "",
             "hello",
             "not a link",
+            "@12345",
+            "@_bad",
+            "127.0.0.1",
+            "1.2",
             "https://[broken",
             "https://example.com:abc",
             "https://example.com:65536",
@@ -585,20 +719,40 @@ class ValidationTests(unittest.TestCase):
                 {"text": "B", "url": "https://t.me/chan_name"},
             ],
         )
-        for raw in ("Just text", "A - example.com\nnot a button", "", "A - nope"):
+        self.assertEqual(
+            parse_quick_buttons("One - a.com && Two - b.com"),
+            [
+                {"text": "One", "url": "https://a.com"},
+                {"text": "Two", "url": "https://b.com", "same_row": True},
+            ],
+        )
+        for raw in (
+            "Just text",
+            "A - example.com\nnot a button",
+            "",
+            "A - nope",
+            "A - a.com && B - b.com && C - c.com && D - d.com",
+        ):
             with self.subTest(raw=raw):
                 self.assertIsNone(parse_quick_buttons(raw))
 
-    def test_post_roundtrip(self):
+    def test_post_roundtrip_and_default_name_length(self):
         post = Post(
             media_type="photo",
             file_id="P",
-            text="<b>x</b>",
-            buttons=[{"text": "A", "url": "https://a.com", "color": "red"}],
+            text="<b>" + "x" * 50 + "</b>",
+            buttons=[{"text": "A", "url": "https://a.com", "color": "red", "same_row": True}],
             link_preview=False,
+            columns=2,
+            spoiler=True,
+            caption_above=True,
+            protect=True,
+            silent=True,
         )
         self.assertEqual(Post.from_dict(post.to_dict()), post)
-        for bad in (None, [], {"media_type": "bad", "file_id": "x"}, {"buttons": [{}]}):
+        self.assertLessEqual(len(post.default_name()), 40)
+        self.assertTrue(Post(text="<b>   </b>").is_empty())
+        for bad in (None, [], {"media_type": "bad", "file_id": "x"}, {"buttons": [{}]}, {"columns": 9}):
             self.assertIsNone(Post.from_dict(bad))
 
     def test_utf16_and_escaped_html_length(self):
